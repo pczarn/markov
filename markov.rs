@@ -12,12 +12,14 @@ use std::collections::hashmap::{HashMap, HashSet};
 use std::collections::TrieMap;
 use std::collections::RingBuf;
 use std::collections::Deque;
+use std::collections::Collection;
 use std::cmp;
 use std::cmp::Ord;
 use std::mem::size_of;
 use std::uint;
 use std::fmt::Show;
 use std::slice::ImmutableVector;
+use std::hash::Hash;
 
 struct WeightedTrie<T> {
 _d:()
@@ -410,37 +412,65 @@ struct IndexedItem<T> {
 }
 
 struct WeightedVec<T> {
-    inner: Vec<IndexedItem<T>>
+    inner: Vec<IndexedItem<T>>,
+    len: uint
+}
+
+impl<T: Eq + Hash> WeightedVec<T> {
+    pub fn from_multiset(multiset: HashMap<T, uint>) -> WeightedVec<T> {
+        let mut cumul = 0u;
+        let inner = multiset.move_iter().map(|(elem, count)| {
+            cumul += count;
+            // println!("{}", cumul);
+            IndexedItem {
+                end_idx: cumul,
+                item: elem
+            }
+        }).collect();
+        WeightedVec {
+            inner: inner,
+            len: cumul
+        }
+    }
 }
 
 impl<T> WeightedVec<T> {
-    pub fn from_multiset(multiset: HashMap<T, uint>) {
-        let mut cumul = 0u;
-        WeightedVec {
-            inner: multiset.move_iter().map(|(elem, count)| {
-                cumul += count;
-                IndexedItem {
-                    end_idx: cumul,
-                    item: elem
-                }
-            }).collect()
-        }
-    }
+    fn bsearch<'a>(&'a self, idx: uint) -> Option<&'a T> {
+        // let mut lo_guess: uint = 0;
+        // let mut hi_guess: uint = self.inner.len() - 1;
 
-    fn bsearch<'a>(&'a self, idx: uint) -> &'a T {
-        let mut lo_guess: uint = 0;
-        let mut hi_guess: uint = self.inner.len() - 1;
+        // while hi_guess > lo_guess {
+        //     let guess = (lo_guess + hi_guess) >> 1;
+        //     if self.inner[guess].end_idx < idx {
+        //         lo_guess = guess + 1;
+        //     } else if self.inner[guess - 1].end_idx > idx {
+        //         hi_guess = guess - 1;
+        //     } else {
+        //         return Some(&self.inner[guess].item);
+        //     }
+        // }
+        // println!("{} {} {:?}", idx, self.len, self.inner);
+        // None
+        let mut base: uint = 0;
+        let mut lim: uint = self.inner.len();
 
-        while hi_guess > lo_guess {
-            let guess = (lo_guess + hi_guess) >> 1;
-            if self.inner[guess].end_idx < idx {
-                lo_guess = guess + 1;
-            } else if self.inner[guess - 1].end_idx > idx {
-                hi_guess = guess - 1;
-            } else {
-                return &self.inner[guess].item;
+        while lim != 0 {
+            let ix = base + (lim >> 1);
+            if idx >= self.inner[ix].end_idx {
+                base = ix + 1;
+                lim -= 1;
+            } else if idx >= self.inner[ix - 1].end_idx {
+                return Some(&self.inner[ix].item);
             }
+            lim >>= 1;
         }
+        return None;
+    }
+}
+
+impl<T> Collection for WeightedVec<T> {
+    fn len(&self) -> uint {
+        self.len
     }
 }
 
@@ -513,6 +543,8 @@ fn main() {
         }
     }
 
+    let syls = WeightedVec::from_multiset(syls);
+
     // for i in range(0u, intern_syl_vec.len()) {
     //     match syl_trie.lookup(&[i]) {
     //         Some(set_ref) => {
@@ -555,9 +587,8 @@ fn main() {
     let mut buf = RingBuf::with_capacity(3);
 
     for _ in range(0u, ORDER) {
-        let last_i = rng.gen_range(0, cumul);
-        let i = syls.as_slice().bsearch(|&(cumul_sum, cb, _)| if last_i >= cumul_sum && last_i < cb { cmp::Equal } else { cumul_sum.cmp(&last_i) }).expect("a");
-        buf.push(syls[i].val2());
+        let last_i = rng.gen_range(0, syls.len());
+        buf.push(*syls.bsearch(last_i).unwrap());
     }
 
     for _ in range(0u, 2_000) {
@@ -576,9 +607,8 @@ fn main() {
                 _ => {
                     // let last_i = rng.gen_range(0, cumul);
                     // ([syls[rng.gen_range(0, syls.len())], 0, 0], 1)
-                    let last_i = rng.gen_range(0, cumul);
-                    let i = syls.as_slice().bsearch(|&(cumul_sum, _, _)| cumul_sum.cmp(&last_i)).expect("b");
-                    ([syls[i].val2(), 0, 0], 1)
+                    let last_i = rng.gen_range(0, syls.len());
+                    ([*syls.bsearch(last_i).unwrap(), 0, 0], 1)
                 }
             }
         };
@@ -586,15 +616,15 @@ fn main() {
             Some(set_ref) => {
                 let len = set_ref.len();
                 let i = rng.gen_range(0, len);
-                if buf.len() == 3 { buf.pop(); }
+                if buf.len() == ORDER { buf.pop(); }
                 buf.push_front(set_ref[i]);
+                print!("{}", intern_syl_vec.get(last[0]));
             }
             None => {
                 buf.pop();
                 // last = syls[rng.gen_range(0, syls.len())];
             }
         }
-        print!("{}", intern_syl_vec.get(last[0]));
     }
-    println!("\nall:{} {} uniq:{}", cumul, syls.len(), intern_syl_vec.len());
+    println!("\nall:{} uniq:{}", syls.len(), intern_syl_vec.len());
 }
