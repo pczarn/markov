@@ -10,10 +10,14 @@ use std::rand;
 use std::rand::Rng;
 use std::collections::hashmap::{HashMap, HashSet};
 use std::collections::TrieMap;
+use std::collections::RingBuf;
+use std::collections::Deque;
 use std::cmp;
+use std::cmp::Ord;
 use std::mem::size_of;
 use std::uint;
 use std::fmt::Show;
+use std::slice::ImmutableVector;
 
 struct WeightedTrie<T> {
 _d:()
@@ -398,11 +402,54 @@ fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
     }
 }
 
+static ORDER: uint = 3;
+
+struct IndexedItem<T> {
+    end_idx: uint,
+    item: T
+}
+
+struct WeightedVec<T> {
+    inner: Vec<IndexedItem<T>>
+}
+
+impl<T> WeightedVec<T> {
+    pub fn from_multiset(multiset: HashMap<T, uint>) {
+        let mut cumul = 0u;
+        WeightedVec {
+            inner: multiset.move_iter().map(|(elem, count)| {
+                cumul += count;
+                IndexedItem {
+                    end_idx: cumul,
+                    item: elem
+                }
+            }).collect()
+        }
+    }
+
+    fn bsearch<'a>(&'a self, idx: uint) -> &'a T {
+        let mut lo_guess: uint = 0;
+        let mut hi_guess: uint = self.inner.len() - 1;
+
+        while hi_guess > lo_guess {
+            let guess = (lo_guess + hi_guess) >> 1;
+            if self.inner[guess].end_idx < idx {
+                lo_guess = guess + 1;
+            } else if self.inner[guess - 1].end_idx > idx {
+                hi_guess = guess - 1;
+            } else {
+                return &self.inner[guess].item;
+            }
+        }
+    }
+}
+
 fn main() {
     let mut intern_syl: HashMap<String, uint> = HashMap::new();
     let mut intern_syl_vec: Vec<String> = Vec::new();
     // let mut syllable_multiset: Vec<uint> = Vec::new();
     let mut syl_trie: PatriciaTrie<Vec<uint>> = PatriciaTrie::new();
+    // let mut syl_trie: PatriciaTrie<HashSet<uint, uint>> = PatriciaTrie::new();
     // let mut syl_trie = TrieMap::new();
 
     // let s = "Ala ma ko ta lu bi mle ko ten ko tek ży";
@@ -410,42 +457,59 @@ fn main() {
 
     intern_syl.insert(" ".to_string(), 0);
     intern_syl_vec.push(" ".to_string());
-    let mut syls = vec![0, 0, 0];//Vec::new();
+    let mut buf_syls = Vec::new();//RingBuf::new();//vec![0, 0, 0];//Vec::new();
+    let mut syls: HashMap<uint, uint> = HashMap::new();
+    
+    for _ in range(0, ORDER) {
+        buf_syls.push(0);
+    }
 
     let file = File::open(&Path::new("data/ASOIAF.txt"));
     let mut reader = BufferedReader::new(file);
 
     for line in reader.lines() {
         let line = line.unwrap();
-        let tokens = regex!(r"([:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s?|\s)");
-        let whitespace = regex!(r"\s+");
+        let tokens = regex!(r"[:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s+|\s+");
+        // let whitespace = regex!(r"\s+");
 
-        let line = whitespace.replace_all(line.as_slice(), " ");
+        // let line = whitespace.replace_all(line.as_slice(), " ");
 
         for (start, end) in tokens.find_iter(line.as_slice()) {
-            let syl = line.as_slice().slice(start, end);
+            let syl_untrim = line.as_slice().slice(start, end);
+            let mut syl = syl_untrim.trim_right().to_string();
+            if syl.len() != syl_untrim.len() {
+                syl.push_char(' ');
+            }
+
             let i = intern_syl.len();
             let interned_syl = *intern_syl.find_with_or_insert_with(syl.to_string(),
                                                                     i,
                                                                     |_k, _v, _a| (),
-                                                                    |_k, a| {
-                                                                        intern_syl_vec.push(syl.to_string());
+                                                                    |k, a| {
+                                                                        intern_syl_vec.push(k.clone());
                                                                         a
                                                                     });
 
             // syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
             // syllable_multiset.push(interned_syl);
 
-            match syls.slice_from(syls.len() - 3) {
-                [a, b, c] => {
-                    append(&mut syl_trie, &[c, b, a], interned_syl);
-                    append(&mut syl_trie, &[c, b], interned_syl);
-                    append(&mut syl_trie, &[c], interned_syl);
-                }
-                _ => unreachable!()
-            }
+            {
+              let iter = buf_syls.iter();
+              match buf_syls.as_slice() {
+                  [a, b, c] => {
+                      append(&mut syl_trie, &[c, b, a], interned_syl);
+                      append(&mut syl_trie, &[c, b], interned_syl);
+                      append(&mut syl_trie, &[c], interned_syl);
+                  }
+                  _ => unreachable!()
+              }
+            };
 
-            syls.push(interned_syl);
+            syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+
+            // syls.push(interned_syl);
+            buf_syls.pop();
+            buf_syls.unshift(interned_syl);
         }
     }
 
@@ -485,27 +549,52 @@ fn main() {
     let mut rng = rand::task_rng();
 
     // let i: uint = rng.gen_range();
-    let last_i = rng.gen_range(0, syls.len());
-    let mut last = *rng.choose(syls.as_slice()).unwrap();//intern_syl_vec.get(last_i);
+    // let mut last = vec![*rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap()];//intern_syl_vec.get(last_i);
     // println!("{}", last);
 
-    for _ in range(0u, 10000) {
-        match syl_trie.lookup(&[last]) {
+    let mut buf = RingBuf::with_capacity(3);
+
+    for _ in range(0u, ORDER) {
+        let last_i = rng.gen_range(0, cumul);
+        let i = syls.as_slice().bsearch(|&(cumul_sum, cb, _)| if last_i >= cumul_sum && last_i < cb { cmp::Equal } else { cumul_sum.cmp(&last_i) }).expect("a");
+        buf.push(syls[i].val2());
+    }
+
+    for _ in range(0u, 2_000) {
+        let (last, lastn) = {
+            let mut iter = buf.iter();
+            match (iter.next(), iter.next(), iter.next()) {
+                (Some(&c), Some(&b), Some(&a)) => {
+                    ([c, b, a], 3)
+                }
+                (Some(&b), Some(&a), None) => {
+                    ([b, a, 0], 2)
+                }
+                (Some(&a), _, _) => {
+                    ([a, 0, 0], 1)
+                }
+                _ => {
+                    // let last_i = rng.gen_range(0, cumul);
+                    // ([syls[rng.gen_range(0, syls.len())], 0, 0], 1)
+                    let last_i = rng.gen_range(0, cumul);
+                    let i = syls.as_slice().bsearch(|&(cumul_sum, _, _)| cumul_sum.cmp(&last_i)).expect("b");
+                    ([syls[i].val2(), 0, 0], 1)
+                }
+            }
+        };
+        match syl_trie.lookup(last.slice_to(lastn)) {
             Some(set_ref) => {
                 let len = set_ref.len();
                 let i = rng.gen_range(0, len);
-                last = set_ref[i];
-                // let (&i, _) = set_ref.iter().skip(i).next().unwrap();
-                // println!("{} => {}!", last_i, i);
-                // last_i = i;
-                // println!("{}!", intern_syl_vec.get(last_i));
+                if buf.len() == 3 { buf.pop(); }
+                buf.push_front(set_ref[i]);
             }
             None => {
-                last = syls[rng.gen_range(0, syls.len())];
-                // println!("{}", intern_syl_vec.get(last_i));
+                buf.pop();
+                // last = syls[rng.gen_range(0, syls.len())];
             }
         }
-        print!("{}", intern_syl_vec.get(last));
+        print!("{}", intern_syl_vec.get(last[0]));
     }
-    println!("\n{}", intern_syl_vec.len());
+    println!("\nall:{} {} uniq:{}", cumul, syls.len(), intern_syl_vec.len());
 }
