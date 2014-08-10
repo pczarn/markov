@@ -1,5 +1,11 @@
-extern crate debug;
+#![feature(phase)]
 
+extern crate debug;
+#[phase(plugin)]
+extern crate regex_macros;
+extern crate regex;
+
+use std::io::{BufferedReader, File};
 use std::rand;
 use std::rand::Rng;
 use std::collections::hashmap::{HashMap, HashSet};
@@ -57,6 +63,9 @@ impl<'a> BitArray for &'a [uint] {
 
     /// Returns an array which is just the bits from start to end
     fn bit_slice(&self, start: uint, end: uint) -> uint {
+        // FIXME check for start oob?
+        if start == end { return 0 }
+
         if (start / uint::BITS) == (end / uint::BITS) {
             self[start / uint::BITS].bit_slice(start % uint::BITS, end % uint::BITS)
         } else if end % uint::BITS == 0 && end - start <= 64 {
@@ -114,6 +123,8 @@ impl<V> PatriciaTrie<V> {
     let mut node = self;
     let mut idx = 0;
     let key_len = key.len() * uint::BITS;
+
+    // println!("insert({})", key);
     loop {
         // Mask in case search key is shorter than node key
         let slice_len = cmp::min(node.skip_len as uint,
@@ -123,8 +134,12 @@ impl<V> PatriciaTrie<V> {
         if slice_len < 64 {
             masked_prefix &= ((1 << slice_len) - 1);
         }
-        let key_slice = key.bit_slice(idx, idx + slice_len);
-    
+        // println!("{} len::{} slice_len:{}", idx, key.len(), slice_len);
+        let key_slice = if slice_len == 0 {
+            0
+        } else {
+            key.bit_slice(idx, idx + slice_len)
+        };
 
         // println!("{masked_prefix} == {key_slice}", masked_prefix = masked_prefix, key_slice = key_slice);
         if masked_prefix == key_slice {
@@ -167,6 +182,7 @@ impl<V> PatriciaTrie<V> {
             }
             else {
                 // Search key longer than node key, recurse
+                // println!("equal recurse {} + {} + 1", idx, node.skip_len);
                 idx += node.skip_len as uint + 1;
                 let tmp = node;  // hack to appease borrowck
                 let subtree = if key.bit(idx - 1)
@@ -197,16 +213,71 @@ impl<V> PatriciaTrie<V> {
             let child_r = node.child_r.take();
             let value_neighbor = node.data.take();
             let tmp = node;  // borrowck hack
-            let (insert, neighbor) = if key_slice.bit(diff)
+            let (mut insert, neighbor) = if key_slice.bit(diff)
                                           { (&mut tmp.child_r, &mut tmp.child_l) }
                                      else { (&mut tmp.child_l, &mut tmp.child_r) };
-            *insert = Some(box PatriciaTrie {
-              data: None,
-              child_l: None,
-              child_r: None,
-              prefix: key.bit_slice(idx + diff + 1, key_len),
-              skip_len: (key_len - idx - diff - 1) as u8
-            });
+
+            // let mut sidx = idx + diff + 1;
+            // // let mut eidx = key_len - sidx;
+            // while key_len - sidx > uint::BITS {
+            //     let mut tmp2 = box PatriciaTrie {
+            //       data: None,
+            //       child_l: None,
+            //       child_r: None,
+            //       prefix: key.bit_slice(sidx, sidx + uint::BITS),
+            //       skip_len: uint::BITS as u8
+            //     };
+            //     let insert2 = if key.bit(sidx + uint::BITS) { &mut tmp2.child_r } else { &mut tmp2.child_l };
+            //     *insert = Some(tmp2);
+            //     sidx += uint::BITS + 1;
+            // }
+            let mut sidx = idx + diff + 1;
+            let mut eidx = key_len;
+            let mut obj = (None, None);
+            // let mut eidx = key_len - sidx;
+            while eidx - sidx > uint::BITS {
+                let (l, r) = obj;
+                // println!("{}  len:{}", eidx - uint::BITS, key.len());
+                let mut tmp2 = box PatriciaTrie {
+                  data: None,
+                  child_l: l,
+                  child_r: r,
+                  prefix: key.bit_slice(eidx - uint::BITS, eidx),
+                  skip_len: uint::BITS as u8
+                };
+                eidx -= uint::BITS + 1;
+                obj = if key.bit(eidx) { (None, Some(tmp2)) } else { (Some(tmp2), None) };
+                // let insert2 = if key.bit(sidx + uint::BITS) { &mut tmp2.child_r } else { &mut tmp2.child_l };
+                // *insert = Some(tmp2);
+                // sidx += uint::BITS + 1;
+            }
+            // if (key_len - idx - diff - 1) <= 64 {
+                let (l, r) = obj;
+                // println!("{}  len:{}", sidx, key.len());
+                *insert = Some(box PatriciaTrie {
+                    data: None,
+                    child_l: l,
+                    child_r: r,
+                    prefix: key.bit_slice(sidx, eidx),
+                    skip_len: (eidx - sidx) as u8
+                });
+            // } else {
+            //     let mut oidx = idx + diff + 1;
+            //     let mut nidx = cmp::min(oidx + uint::BITS, key_len);
+            //     loop {
+            //         *insert = Some(box PatriciaTrie {
+            //           data: None,
+            //           child_l: None,
+            //           child_r: None,
+            //           prefix: key.bit_slice(oidx, nidx),
+            //           skip_len: (nidx - oidx) as u8
+            //         });
+            //         if nidx == key_len { break; }
+            //         oidx = nidx;
+            //         nidx = cmp::min
+            //         insert = &mut insert.child_
+            //     }
+            // }
             *neighbor = Some(box PatriciaTrie {
               data: value_neighbor,
               child_l: child_l,
@@ -218,6 +289,7 @@ impl<V> PatriciaTrie<V> {
             tmp.skip_len = diff as u8;
             tmp.prefix = tmp.prefix & ((1 << diff) - 1);
             // Recurse
+            // println!("recurse");
             idx += 1 + diff;
             node = &mut **insert.get_mut_ref();
         } // end if prefixes match
@@ -236,6 +308,8 @@ impl<V> PatriciaTrie<V> {
         if key_len - key_idx < node.skip_len as uint {
           return None;
         }
+
+
 
         // Key fails to match prefix --- no match
         if node.prefix != key.bit_slice(key_idx, key_idx + node.skip_len as uint) {
@@ -305,60 +379,74 @@ impl<V:Show> PatriciaTrie<V> {
   }
 }
 
+fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
+    let found = match trie.lookup_mut(slice) {
+        Some(set_ref) => {
+            // set_ref.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+            set_ref.push(elem);
+            true
+        }
+        None => false
+    };
+
+    if !found {
+        let mut syllable_multiset: Vec<uint> = Vec::new();
+
+        syllable_multiset.push(elem);
+
+        trie.insert(slice, syllable_multiset);
+    }
+}
+
 fn main() {
     let mut intern_syl: HashMap<String, uint> = HashMap::new();
     let mut intern_syl_vec: Vec<String> = Vec::new();
-    let mut syllable_multiset: HashMap<uint, uint> = HashMap::new();
-    let mut syl_trie: PatriciaTrie<HashMap<uint, uint>> = PatriciaTrie::new();
+    // let mut syllable_multiset: Vec<uint> = Vec::new();
+    let mut syl_trie: PatriciaTrie<Vec<uint>> = PatriciaTrie::new();
     // let mut syl_trie = TrieMap::new();
 
-    let s = "Ala ma ko ta lu bi mle ko ten ko tek ży";
+    // let s = "Ala ma ko ta lu bi mle ko ten ko tek ży";
     // Ala ma ko ta lu bi mle ten
 
-    let mut syls = Vec::new();
+    intern_syl.insert(" ".to_string(), 0);
+    intern_syl_vec.push(" ".to_string());
+    let mut syls = vec![0, 0, 0];//Vec::new();
 
-    for syl in s.split(' ') {
-        let i = intern_syl.len();
-        let interned_syl = *intern_syl.find_with_or_insert_with(syl.to_string(),
-                                                                i,
-                                                                |_k, _v, _a| (),
-                                                                |_k, a| {
-                                                                    intern_syl_vec.push(syl.to_string());
-                                                                    a
-                                                                });
+    let file = File::open(&Path::new("data/ASOIAF.txt"));
+    let mut reader = BufferedReader::new(file);
 
-        syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+    for line in reader.lines() {
+        let line = line.unwrap();
+        let tokens = regex!(r"([:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s?|\s)");
+        let whitespace = regex!(r"\s+");
 
-        match syls.last() {
-            Some(&last) => {
-                // println!("{} => {}", *syls.last().unwrap(), interned_syl);
-                let found = match syl_trie.lookup_mut(&[last]) {
-                    Some(set_ref) => {
-                        set_ref.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
-                        true
-                    }
-                    None => {
-                        // println!("trie for {}", syl);
-                        false
-                    }
-                };
+        let line = whitespace.replace_all(line.as_slice(), " ");
 
-                if !found {
-                    let mut syllable_multiset: HashMap<uint, uint> = HashMap::new();
+        for (start, end) in tokens.find_iter(line.as_slice()) {
+            let syl = line.as_slice().slice(start, end);
+            let i = intern_syl.len();
+            let interned_syl = *intern_syl.find_with_or_insert_with(syl.to_string(),
+                                                                    i,
+                                                                    |_k, _v, _a| (),
+                                                                    |_k, a| {
+                                                                        intern_syl_vec.push(syl.to_string());
+                                                                        a
+                                                                    });
 
-                    // println!("{:?}", syl_trie);
-                    // syl_trie.print();
-                    // println!("inserting key:{}!", &[*syls.last().unwrap()]);
-                    // println!("");
-                    syllable_multiset.insert(interned_syl, 1);
+            // syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+            // syllable_multiset.push(interned_syl);
 
-                    syl_trie.insert(&[last], syllable_multiset);
+            match syls.slice_from(syls.len() - 3) {
+                [a, b, c] => {
+                    append(&mut syl_trie, &[c, b, a], interned_syl);
+                    append(&mut syl_trie, &[c, b], interned_syl);
+                    append(&mut syl_trie, &[c], interned_syl);
                 }
+                _ => unreachable!()
             }
-            None => ()
-        }
 
-        syls.push(interned_syl);
+            syls.push(interned_syl);
+        }
     }
 
     // for i in range(0u, intern_syl_vec.len()) {
@@ -397,24 +485,27 @@ fn main() {
     let mut rng = rand::task_rng();
 
     // let i: uint = rng.gen_range();
-    let mut last_i = rng.gen_range(0, intern_syl_vec.len());
-    let last = rng.choose(intern_syl_vec.as_slice());//intern_syl_vec.get(last_i);
+    let last_i = rng.gen_range(0, syls.len());
+    let mut last = *rng.choose(syls.as_slice()).unwrap();//intern_syl_vec.get(last_i);
     // println!("{}", last);
 
-    for _ in range(0u, 50) {
-        match syl_trie.lookup(&[last_i]) {
+    for _ in range(0u, 10000) {
+        match syl_trie.lookup(&[last]) {
             Some(set_ref) => {
                 let len = set_ref.len();
                 let i = rng.gen_range(0, len);
-                let (&i, _) = set_ref.iter().skip(i).next().unwrap();
+                last = set_ref[i];
+                // let (&i, _) = set_ref.iter().skip(i).next().unwrap();
                 // println!("{} => {}!", last_i, i);
-                last_i = i;
+                // last_i = i;
                 // println!("{}!", intern_syl_vec.get(last_i));
             }
             None => {
-                last_i = rng.gen_range(0, intern_syl_vec.len());
+                last = syls[rng.gen_range(0, syls.len())];
                 // println!("{}", intern_syl_vec.get(last_i));
             }
         }
+        print!("{}", intern_syl_vec.get(last));
     }
+    println!("\n{}", intern_syl_vec.len());
 }
