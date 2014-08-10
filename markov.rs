@@ -1,4 +1,4 @@
-#![feature(phase)]
+#![feature(phase, default_type_params)]
 
 extern crate debug;
 #[phase(plugin)]
@@ -14,12 +14,13 @@ use std::collections::RingBuf;
 use std::collections::Deque;
 use std::collections::Collection;
 use std::cmp;
-use std::cmp::Ord;
+use std::cmp::{Ord, Equal, Greater, Less};
 use std::mem::size_of;
 use std::uint;
 use std::fmt::Show;
 use std::slice::ImmutableVector;
 use std::hash::Hash;
+use std::default::Default;
 
 struct WeightedTrie<T> {
 _d:()
@@ -106,18 +107,42 @@ fn test_bit() {
 //     // }
 // }
 
-struct PatriciaTrie<V> {
+// struct WeightedPatriciaTrie<V> {
+//     data: Option<V>,
+
+//     child_l: Option<Box<PatriciaTrie<V>>>,
+//     child_r: Option<Box<PatriciaTrie<V>>>,
+//     weight_l: uint,
+//     prefix: uint,
+//     skip_len: u8
+// }
+
+#[deriving(Default)]
+struct NoData<V>;
+
+trait TreeData<V> {
+    fn update(&mut self, value: &V);
+}
+
+impl<V> TreeData<V> for NoData<V> {
+    #[inline]
+    fn update(&mut self, _v: &V) {}
+}
+
+struct PatriciaTrie<V, D = NoData<V>> {
     data: Option<V>,
-    child_l: Option<Box<PatriciaTrie<V>>>,
-    child_r: Option<Box<PatriciaTrie<V>>>,
+    data_l: D,
+    child_l: Option<Box<PatriciaTrie<V, D>>>,
+    child_r: Option<Box<PatriciaTrie<V, D>>>,
     prefix: uint,
     skip_len: u8
 }
 
-impl<V> PatriciaTrie<V> {
-  pub fn new() -> PatriciaTrie<V> {
+impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
+  pub fn new() -> PatriciaTrie<V, D> {
     PatriciaTrie {
       data: None,
+      data_l: Default::default(),
       child_l: None,
       child_r: None,
       prefix: 0,
@@ -153,60 +178,67 @@ impl<V> PatriciaTrie<V> {
             let slice_len = key_len - idx;
             // Search key is shorter than skip prefix: truncate the prefix and attach
             // the old data as a child
-            if node.skip_len as uint > slice_len {
-                // Remove the old node's children
-                let child_l = node.child_l.take();
-                let child_r = node.child_r.take();
-                let value_neighbor = node.data.take();
-                // Put the old data in a new child, with the remainder of the prefix
-                let new_child = if node.prefix.bit(slice_len)
-                                  { &mut node.child_r } else { &mut node.child_l };
-                *new_child = Some(box PatriciaTrie {
-                  data: value_neighbor,
-                  child_l: child_l,
-                  child_r: child_r,
-                  prefix: node.prefix >> (slice_len + 1),
-                  skip_len: node.skip_len - slice_len as u8 - 1
-                });
-                // Chop the prefix down and put the new data in place
-                node.skip_len = slice_len as u8;
-                node.prefix = key_slice;
-                node.data = Some(value);
-                return true;
-            }
-            else if node.skip_len as uint == slice_len {
-                // If we have an exact match, great, insert it
-                // println!("exact");
-                if node.data.is_none() {
-                  node.data = Some(value);
-                  return true;
+            match (node.skip_len as uint).cmp(&slice_len) {
+                Greater => {
+                    // Remove the old node's children
+                    let child_l = node.child_l.take();
+                    let child_r = node.child_r.take();
+                    let value_neighbor = node.data.take();
+                    // Put the old data in a new child, with the remainder of the prefix
+                    let new_child = if node.prefix.bit(slice_len)
+                                      { &mut node.child_r } else { &mut node.child_l };
+                    *new_child = Some(box PatriciaTrie {
+                        data: value_neighbor,
+                        data_l: node.data_l,
+                        child_l: child_l,
+                        child_r: child_r,
+                        prefix: node.prefix >> (slice_len + 1),
+                        skip_len: node.skip_len - slice_len as u8 - 1
+                    });
+                    // Chop the prefix down and put the new data in place
+                    node.skip_len = slice_len as u8;
+                    node.prefix = key_slice;
+                    node.data = Some(value);
+                    return true;
                 }
-                // if overwrite {
-                //   node.data = Some(value);
-                // }
-                return false;
-            }
-            else {
-                // Search key longer than node key, recurse
-                // println!("equal recurse {} + {} + 1", idx, node.skip_len);
-                idx += node.skip_len as uint + 1;
-                let tmp = node;  // hack to appease borrowck
-                let subtree = if key.bit(idx - 1)
-                                { &mut tmp.child_r } else { &mut tmp.child_l };
-                let slice_len = cmp::min(key_len, idx + uint::BITS);
-                // Recurse, adding a new node if necessary
-                if subtree.is_none() {
-                  // println!("skip_len: {slice_len} as u8 - {idx} as u8, prefix = {:x}", key.bit_slice(idx, slice_len), slice_len = slice_len, idx = idx)
-                  *subtree = Some(box PatriciaTrie {
-                    data: None,
-                    child_l: None,
-                    child_r: None,
-                    prefix: key.bit_slice(idx, slice_len),
-                    skip_len: slice_len as u8 - idx as u8
-                  });
+                Equal => {
+                    // If we have an exact match, great, insert it
+                    // println!("exact");
+                    if node.data.is_none() {
+                      node.data = Some(value);
+                      return true;
+                    }
+                    // if overwrite {
+                    //   node.data = Some(value);
+                    // }
+                    return false;
                 }
-                // subtree.get_mut_ref is a &mut Box<U> here, so &mut ** gets a &mut U
-                node = &mut **subtree.get_mut_ref();
+                Less => {
+                    // Search key longer than node key, recurse
+                    idx += node.skip_len as uint + 1;
+                    let tmp = node;  // hack to appease borrowck
+                    let subtree = if key.bit(idx - 1)
+                                    { &mut tmp.child_r } else {
+                        tmp.data_l.update(&value);
+                        &mut tmp.child_l
+                    };
+                    let slice_len = cmp::min(key_len, idx + uint::BITS);
+                    // Recurse, adding a new node if necessary
+                    if subtree.is_none() {
+                      // println!("skip_len: {slice_len} as u8 - {idx} as u8, prefix = {:x}", key.bit_slice(idx, slice_len), slice_len = slice_len, idx = idx)
+                      *subtree = Some(box PatriciaTrie {
+                        data: None,
+                        data_l: Default::default(),
+                        child_l: None,
+                        child_r: None,
+                        prefix: key.bit_slice(idx, slice_len),
+                        skip_len: slice_len as u8 - idx as u8
+                      });
+
+                    }
+                    // subtree.get_mut_ref is a &mut Box<U> here, so &mut ** gets a &mut U
+                    node = &mut **subtree.get_mut_ref();
+                }
             } // end search_len vs prefix len
         }
         else {
@@ -223,73 +255,38 @@ impl<V> PatriciaTrie<V> {
                                           { (&mut tmp.child_r, &mut tmp.child_l) }
                                      else { (&mut tmp.child_l, &mut tmp.child_r) };
 
-            // let mut sidx = idx + diff + 1;
-            // // let mut eidx = key_len - sidx;
-            // while key_len - sidx > uint::BITS {
-            //     let mut tmp2 = box PatriciaTrie {
-            //       data: None,
-            //       child_l: None,
-            //       child_r: None,
-            //       prefix: key.bit_slice(sidx, sidx + uint::BITS),
-            //       skip_len: uint::BITS as u8
-            //     };
-            //     let insert2 = if key.bit(sidx + uint::BITS) { &mut tmp2.child_r } else { &mut tmp2.child_l };
-            //     *insert = Some(tmp2);
-            //     sidx += uint::BITS + 1;
-            // }
             let mut sidx = idx + diff + 1;
             let mut eidx = key_len;
             let mut obj = (None, None);
-            // let mut eidx = key_len - sidx;
             while eidx - sidx > uint::BITS {
                 let (l, r) = obj;
-                // println!("{}  len:{}", eidx - uint::BITS, key.len());
                 let mut tmp2 = box PatriciaTrie {
-                  data: None,
-                  child_l: l,
-                  child_r: r,
-                  prefix: key.bit_slice(eidx - uint::BITS, eidx),
-                  skip_len: uint::BITS as u8
+                    data: None,
+                    data_l: Default::default(),
+                    child_l: l,
+                    child_r: r,
+                    prefix: key.bit_slice(eidx - uint::BITS, eidx),
+                    skip_len: uint::BITS as u8
                 };
                 eidx -= uint::BITS + 1;
                 obj = if key.bit(eidx) { (None, Some(tmp2)) } else { (Some(tmp2), None) };
-                // let insert2 = if key.bit(sidx + uint::BITS) { &mut tmp2.child_r } else { &mut tmp2.child_l };
-                // *insert = Some(tmp2);
-                // sidx += uint::BITS + 1;
             }
-            // if (key_len - idx - diff - 1) <= 64 {
-                let (l, r) = obj;
-                // println!("{}  len:{}", sidx, key.len());
-                *insert = Some(box PatriciaTrie {
-                    data: None,
-                    child_l: l,
-                    child_r: r,
-                    prefix: key.bit_slice(sidx, eidx),
-                    skip_len: (eidx - sidx) as u8
-                });
-            // } else {
-            //     let mut oidx = idx + diff + 1;
-            //     let mut nidx = cmp::min(oidx + uint::BITS, key_len);
-            //     loop {
-            //         *insert = Some(box PatriciaTrie {
-            //           data: None,
-            //           child_l: None,
-            //           child_r: None,
-            //           prefix: key.bit_slice(oidx, nidx),
-            //           skip_len: (nidx - oidx) as u8
-            //         });
-            //         if nidx == key_len { break; }
-            //         oidx = nidx;
-            //         nidx = cmp::min
-            //         insert = &mut insert.child_
-            //     }
-            // }
+            let (l, r) = obj;
+            *insert = Some(box PatriciaTrie {
+                data: None,
+                data_l: Default::default(),
+                child_l: l,
+                child_r: r,
+                prefix: key.bit_slice(sidx, eidx),
+                skip_len: (eidx - sidx) as u8
+            });
             *neighbor = Some(box PatriciaTrie {
-              data: value_neighbor,
-              child_l: child_l,
-              child_r: child_r,
-              prefix: tmp.prefix >> (diff + 1),
-              skip_len: tmp.skip_len - diff as u8 - 1
+                data: value_neighbor,
+                data_l: Default::default(),
+                child_l: child_l,
+                child_r: child_r,
+                prefix: tmp.prefix >> (diff + 1),
+                skip_len: tmp.skip_len - diff as u8 - 1
             });
             // Chop the prefix down
             tmp.skip_len = diff as u8;
@@ -416,6 +413,20 @@ struct WeightedVec<T> {
     len: uint
 }
 
+#[deriving(Default)]
+struct Weight<V> {
+    weight: uint
+}
+
+impl<V: Collection> TreeData<V> for Weight<V> {
+    #[inline]
+    fn update(&mut self, value: &V) {
+        self.weight += value.len();
+    }
+}
+
+type WeightedPatriciaTrie<V> = PatriciaTrie<V, Weight<V>>;
+
 impl<T: Eq + Hash> WeightedVec<T> {
     pub fn from_multiset(multiset: HashMap<T, uint>) -> WeightedVec<T> {
         let mut cumul = 0u;
@@ -436,21 +447,6 @@ impl<T: Eq + Hash> WeightedVec<T> {
 
 impl<T> WeightedVec<T> {
     fn bsearch<'a>(&'a self, idx: uint) -> Option<&'a T> {
-        // let mut lo_guess: uint = 0;
-        // let mut hi_guess: uint = self.inner.len() - 1;
-
-        // while hi_guess > lo_guess {
-        //     let guess = (lo_guess + hi_guess) >> 1;
-        //     if self.inner[guess].end_idx < idx {
-        //         lo_guess = guess + 1;
-        //     } else if self.inner[guess - 1].end_idx > idx {
-        //         hi_guess = guess - 1;
-        //     } else {
-        //         return Some(&self.inner[guess].item);
-        //     }
-        // }
-        // println!("{} {} {:?}", idx, self.len, self.inner);
-        // None
         let mut base: uint = 0;
         let mut lim: uint = self.inner.len();
 
@@ -523,17 +519,7 @@ fn main() {
             // syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
             // syllable_multiset.push(interned_syl);
 
-            {
-              let iter = buf_syls.iter();
-              match buf_syls.as_slice() {
-                  [a, b, c] => {
-                      append(&mut syl_trie, &[c, b, a], interned_syl);
-                      append(&mut syl_trie, &[c, b], interned_syl);
-                      append(&mut syl_trie, &[c], interned_syl);
-                  }
-                  _ => unreachable!()
-              }
-            };
+            append(&mut syl_trie, buf_syls.as_slice(), interned_syl);
 
             syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
 
