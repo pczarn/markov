@@ -21,6 +21,9 @@ use std::fmt::Show;
 use std::slice::ImmutableVector;
 use std::hash::Hash;
 use std::default::Default;
+use std::clone::Clone;
+use std::mem;
+use std::rc::Rc;
 
 struct WeightedTrie<T> {
 _d:()
@@ -117,7 +120,7 @@ fn test_bit() {
 //     skip_len: u8
 // }
 
-#[deriving(Default)]
+#[deriving(Clone, Default)]
 struct NoData<V>;
 
 trait TreeData<V> {
@@ -134,11 +137,12 @@ struct PatriciaTrie<V, D = NoData<V>> {
     data_l: D,
     child_l: Option<Box<PatriciaTrie<V, D>>>,
     child_r: Option<Box<PatriciaTrie<V, D>>>,
+    // prefix: uint,
     prefix: uint,
     skip_len: u8
 }
 
-impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
+impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
   pub fn new() -> PatriciaTrie<V, D> {
     PatriciaTrie {
       data: None,
@@ -147,6 +151,7 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
       child_r: None,
       prefix: 0,
       skip_len: 0
+      // skip_prefix: 0,
     }
   }
 
@@ -185,11 +190,14 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
                     let child_r = node.child_r.take();
                     let value_neighbor = node.data.take();
                     // Put the old data in a new child, with the remainder of the prefix
-                    let new_child = if node.prefix.bit(slice_len)
-                                      { &mut node.child_r } else { &mut node.child_l };
+                    let (new_child, data_l) = if node.prefix.bit(slice_len) {
+                        (&mut node.child_r, Default::default())
+                    } else {
+                        (&mut node.child_l, node.data_l.clone())
+                    };
                     *new_child = Some(box PatriciaTrie {
                         data: value_neighbor,
-                        data_l: node.data_l,
+                        data_l: mem::replace(&mut node.data_l, data_l),
                         child_l: child_l,
                         child_r: child_r,
                         prefix: node.prefix >> (slice_len + 1),
@@ -219,6 +227,7 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
                     let tmp = node;  // hack to appease borrowck
                     let subtree = if key.bit(idx - 1)
                                     { &mut tmp.child_r } else {
+                        // The value is going to be inserted in the left branch.
                         tmp.data_l.update(&value);
                         &mut tmp.child_l
                     };
@@ -382,6 +391,55 @@ impl<V:Show> PatriciaTrie<V> {
   }
 }
 
+#[deriving(Show)]
+struct TrieInfo {
+    elems: uint,
+    nodes: uint,
+    meaningful: uint,
+    skipped: uint,
+}
+
+impl<V> PatriciaTrie<V> {
+  /// Print the entire tree
+  pub fn print_stat<'a>(&'a self) {
+    fn recurse<'a, V>(tree: &'a PatriciaTrie<V>, depth: uint, info: &mut TrieInfo) {
+      // for i in range(0, tree.skip_len as uint) {
+      //   print!("{:}", if tree.prefix.bit(i) { 1u } else { 0 });
+      // }
+      // println!(": {:}", tree.data);
+      info.skipped += tree.skip_len as uint;
+      if tree.data.is_some() { info.elems += 1; }
+      if tree.child_l.is_some() && tree.child_r.is_some() { info.meaningful += 1; }
+      info.nodes += 1;
+      // left gets no indentation
+      match tree.child_l {
+        Some(ref t) => {
+          // for _ in range(0, depth + tree.skip_len as uint) {
+          //   print!("-");
+          // }
+          // print!("0");
+          recurse(&**t, depth + tree.skip_len as uint + 1, info);
+        }
+        None => { }
+      }
+      // right one gets indentation
+      match tree.child_r {
+        Some(ref t) => {
+          // for _ in range(0, depth + tree.skip_len as uint) {
+          //   print!("_");
+          // }
+          // print!("1");
+          recurse(&**t, depth + tree.skip_len as uint + 1, info);
+        }
+        None => { }
+      }
+    }
+    let mut info = TrieInfo { elems: 0, nodes: 0, meaningful: 0, skipped: 0 };
+    recurse(self, 0, &mut info);
+    println!("{}", info);
+  }
+}
+
 fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
     let found = match trie.lookup_mut(slice) {
         Some(set_ref) => {
@@ -401,7 +459,7 @@ fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
     }
 }
 
-static ORDER: uint = 3;
+static ORDER: uint = 10;
 
 struct IndexedItem<T> {
     end_idx: uint,
@@ -413,7 +471,7 @@ struct WeightedVec<T> {
     len: uint
 }
 
-#[deriving(Default)]
+#[deriving(Clone, Default)]
 struct Weight<V> {
     weight: uint
 }
@@ -471,9 +529,10 @@ impl<T> Collection for WeightedVec<T> {
 }
 
 fn main() {
-    let mut intern_syl: HashMap<String, uint> = HashMap::new();
-    let mut intern_syl_vec: Vec<String> = Vec::new();
+    let mut intern_syl: HashMap<Rc<String>, uint> = HashMap::new();
+    let mut intern_syl_vec: Vec<Rc<String>> = Vec::new();
     // let mut syllable_multiset: Vec<uint> = Vec::new();
+    // let mut syl_trie: HashMap<&[uint], Vec<uint>> = PatriciaTrie::new();
     let mut syl_trie: PatriciaTrie<Vec<uint>> = PatriciaTrie::new();
     // let mut syl_trie: PatriciaTrie<HashSet<uint, uint>> = PatriciaTrie::new();
     // let mut syl_trie = TrieMap::new();
@@ -481,8 +540,9 @@ fn main() {
     // let s = "Ala ma ko ta lu bi mle ko ten ko tek ży";
     // Ala ma ko ta lu bi mle ten
 
-    intern_syl.insert(" ".to_string(), 0);
-    intern_syl_vec.push(" ".to_string());
+    let space = Rc::new(" ".to_string());
+    intern_syl.insert(space.clone(), 0);
+    intern_syl_vec.push(space);
     let mut buf_syls = Vec::new();//RingBuf::new();//vec![0, 0, 0];//Vec::new();
     let mut syls: HashMap<uint, uint> = HashMap::new();
     
@@ -508,7 +568,7 @@ fn main() {
             }
 
             let i = intern_syl.len();
-            let interned_syl = *intern_syl.find_with_or_insert_with(syl.to_string(),
+            let interned_syl = *intern_syl.find_with_or_insert_with(Rc::new(syl),
                                                                     i,
                                                                     |_k, _v, _a| (),
                                                                     |k, a| {
@@ -520,6 +580,8 @@ fn main() {
             // syllable_multiset.push(interned_syl);
 
             append(&mut syl_trie, buf_syls.as_slice(), interned_syl);
+            // append(&mut syl_trie, buf_syls.slice_to(2), interned_syl);
+            // append(&mut syl_trie, buf_syls.slice_to(1), interned_syl);
 
             syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
 
@@ -530,6 +592,10 @@ fn main() {
     }
 
     let syls = WeightedVec::from_multiset(syls);
+
+    // let model = WeightedPatriciaTrie::new();
+    // syl_trie.print();
+    syl_trie.print_stat();
 
     // for i in range(0u, intern_syl_vec.len()) {
     //     match syl_trie.lookup(&[i]) {
@@ -570,7 +636,7 @@ fn main() {
     // let mut last = vec![*rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap()];//intern_syl_vec.get(last_i);
     // println!("{}", last);
 
-    let mut buf = RingBuf::with_capacity(3);
+    let mut buf = RingBuf::with_capacity(ORDER);
 
     for _ in range(0u, ORDER) {
         let last_i = rng.gen_range(0, syls.len());
