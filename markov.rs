@@ -25,6 +25,7 @@ use std::default::Default;
 use std::clone::Clone;
 use std::mem;
 use std::rc::Rc;
+use std::iter::Iterator;
 
 // struct FenwickTree
 
@@ -433,10 +434,10 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
   pub fn map<Q, U: Default + TreeData<Q>>(self,
                 mut f: |V| -> Q)
                 -> (PatriciaTrie<Q, U>, U) {
-    fn left<V, D: TreeData<V>, Q, U: Default + TreeData<Q>>(subtree: PatriciaTrie<V, D>,
-                                                            outer_data: &mut U,
-                                                            f: &mut |V| -> Q)
-                                                            -> PatriciaTrie<Q, U> {
+    fn recurse<V, D: TreeData<V>, Q, U: Default + TreeData<Q>>(subtree: PatriciaTrie<V, D>,
+                                                               outer_data: &mut U,
+                                                               f: &mut |V| -> Q)
+                                                               -> PatriciaTrie<Q, U> {
         let PatriciaTrie {
             data,
             child_l,
@@ -448,15 +449,14 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
 
         let mut data_l: U = Default::default();
 
-        let data = data.map(|d| (*f)(d));
-        match data {
-            Some(ref v) => outer_data.update(v),
-            None => ()
-        }
-        // println!("{:?}", data_l);
-        let child_l = child_l.map(|child| box left(*child, &mut data_l, f));
-        let child_r = child_r.map(|child| box right(*child, outer_data, f));
-        // println!("{:?} out", data_l);
+        let data = data.map(|d| {
+            let v = (*f)(d);
+            outer_data.update(&v);
+            v
+        });
+
+        let child_l = child_l.map(|child| box recurse(*child, &mut data_l, f));
+        let child_r = child_r.map(|child| box recurse(*child, outer_data, f));
 
         outer_data.add(&data_l);
 
@@ -467,50 +467,12 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
             child_r: child_r,
             prefix: prefix,
             skip_len: skip_len
-            // skip_prefix: 0,
         }
     }
 
-    fn right<V, D: TreeData<V>, Q, U: Default + TreeData<Q>>(subtree: PatriciaTrie<V, D>,
-                                                             outer_data: &mut U,
-                                                             f: &mut |V| -> Q)
-                                                             -> PatriciaTrie<Q, U> {
-        let PatriciaTrie {
-            data,
-            child_l,
-            child_r,
-            prefix,
-            skip_len,
-            ..
-        } = subtree;
-
-        let mut data_l: U = Default::default();
-
-        let data = data.map(|d| (*f)(d));
-        match data {
-            Some(ref v) => outer_data.update(v),
-            None => ()
-        }
-
-        let child_l = child_l.map(|child| box left(*child, &mut data_l, f));
-        let child_r = child_r.map(|child| box right(*child, outer_data, f));
-
-        outer_data.add(&data_l);
-
-        PatriciaTrie {
-            data: data,
-            data_l: data_l,
-            child_l: child_l,
-            child_r: child_r,
-            prefix: prefix,
-            skip_len: skip_len
-            // skip_prefix: 0,
-        }
-    }
     let mut data_l = Default::default();
-    let t = left(self, &mut data_l, &mut f);
-    // println!("{:?}", data_l);
-    (t, data_l)
+    let trie = recurse(self, &mut data_l, &mut f);
+    (trie, data_l)
   }
 }
 
@@ -552,7 +514,7 @@ impl<V:Show> PatriciaTrie<V> {
 struct MarkovModel {
     model: WeightedPatriciaTrie<WeightedVec<uint>>,
     between: Range<uint>,
-    high: uint,
+    total_weight: uint,
 }
 
 impl MarkovModel {
@@ -561,12 +523,12 @@ impl MarkovModel {
         MarkovModel {
             model: weighted_trie,
             between: Range::new(0, bound.weight),
-            high: bound.weight,
+            total_weight: bound.weight,
         }
     }
 
     fn sample(&self, rng: &mut rand::TaskRng, buf_slice: &[uint], at_least: uint) -> Option<uint> {
-        let mut high = self.high;//self.between.sample(rng);
+        let mut high = self.total_weight;//self.between.sample(rng);
 
         // let (node, depth) = self.model.subtree(buf_slice, |subtree| {
         //     // println!("rand={}", rand);
@@ -589,18 +551,14 @@ impl MarkovModel {
 
         let mut rand = rng.gen_range(0, high);
 
-        let node = node.walk(|subtree| {
+        node.walk(|subtree| {
             if rand < subtree.data_l.weight {
                 false
             } else {
                 rand -= subtree.data_l.weight;
                 true
             }
-        });
-
-        // println!("{:?}", node);
-
-        node.and_then(|weighted_vec| {
+        }).and_then(|weighted_vec| {
             // assert!(rand < weighted_vec.len());
             // assert_eq!(rand, weighted_vec.len()); // NOPE
             // weighted_vec.bsearch(rand)
@@ -626,8 +584,10 @@ impl MarkovChain {
             rng: rand::task_rng(),
         }
     }
+}
 
-    fn next(&mut self) -> uint {
+impl Iterator<uint> for MarkovChain {
+    fn next(&mut self) -> Option<uint> {
         // let buf_slice = if buf.len() >= 2 {
         //     buf.slice_to(rng.gen_range(buf.len() - 2, buf.len()))
         // // } else if buf.is_empty() {
@@ -636,84 +596,22 @@ impl MarkovChain {
         //     buf.as_slice()
         // };
 
-        // model.sample(buf_slice)
         loop {
             let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.state.len() * uint::BITS);
 
             match sample {
                 Some(elem) => {
                     if self.state.len() == self.order { self.state.pop(); }
-                    // buf.unshift(set_ref[i]);
-                    // println!("{} .. {}", i, len);
-                    // let len = set_ref.len();
-                    // let i = rng.gen_range(0, len);
-                    // buf.unshift(*set_ref.bsearch(i).unwrap());
                     self.state.unshift(elem);
-                    return elem;
+                    return Some(elem);
                 }
                 None => {
                     self.state.pop();
-                    // if buf.is_empty() {
-                    //     let last_i = rng.gen_range(0, syls.len());
-                    //     buf.unshift(*syls.bsearch(last_i).unwrap());
-                    // }
-                    // last = syls[rng.gen_range(0, syls.len())];
                 }
             }
         }
     }
 }
-
-// /// Iterator
-// pub struct Items<'tree, V> {
-//   started: bool,
-//   node: Option<&'tree PatriciaTree<V>>,
-//   parents: Vec<&'tree PatriciaTree<V>>
-// }
-
-// impl<'a, V> Iterator<&'a V> for Items<'a, V> {
-//   fn next(&mut self) -> Option<&'a V> {
-//     fn borrow_opt<'a, V>(opt_ptr: &'a Option<Box<PatriciaTree<V>>>) -> Option<&'a PatriciaTree<V>> {
-//       opt_ptr.as_ref().map(|b| &**b)
-//     }
-
-//     // If we haven't started, maybe return the "last" return value,
-//     // which will be the root node.
-//     if !self.started {
-//       if self.node.is_some() && (**self.node.get_ref()).data.is_some() {
-//         return self.node.unwrap().data.as_ref();
-//       }
-//       self.started = true;
-//     }
-
-//     // Find next data-containing node
-//     while self.node.is_some() {
-//       let mut node = self.node.take();
-//       // Try to go left
-//       let child_l = borrow_opt(&node.unwrap().child_l);
-//       if child_l.is_some() {
-//         self.parents.push(node.unwrap());
-//         self.node = child_l;
-//       // Try to go right, going back up the tree if necessary
-//       } else {
-//         while node.is_some() {
-//           let child_r = borrow_opt(&node.unwrap().child_r);
-//           if child_r.is_some() {
-//             self.node = child_r;
-//             break;
-//           }
-//           node = self.parents.pop();
-//         }
-//       }
-//       // Stop if we've found data.
-//       if self.node.is_some() && self.node.unwrap().data.is_some() {
-//         break;
-//       }
-//     } // end loop
-//     // Return data
-//     self.node.and_then(|node| node.data.as_ref())
-//   }
-// }
 
 #[deriving(Show)]
 struct TrieInfo {
@@ -842,10 +740,7 @@ impl<T: Eq + Ord> WeightedVec<T> {
             Some(mut first) => {
                 let mut cumul_sum = 0;
                 let mut weighted_vec = vec![];
-                // IndexedItem {
-                //     end_idx: cumul_sum,
-                //     item: mem::replace(&mut first, v)
-                // }];
+
                 for v in iter {
                     cumul_sum += 1;
                     if v != first {
@@ -861,12 +756,6 @@ impl<T: Eq + Ord> WeightedVec<T> {
                     item: first
                 });
 
-                // if weighted_vec.is_empty() {
-                //     weighted_vec.push(IndexedItem {
-                //         end_idx: 1,
-                //         item: first
-                //     });
-                // }
                 WeightedVec {
                     inner: weighted_vec,
                     len: cumul_sum
@@ -1048,36 +937,7 @@ fn main() {
     // println!("{:?}", model);
     // println!("through with it");
 
-    for _ in range(0u, 2000_000) {
-        // let (last, lastn) = {
-        //     let mut iter = buf.iter();
-        //     // match (iter.next().map(|n| *n).unwrap_or(&0),
-        //     //        iter.next().map(|n| *n).unwrap_or(&0),
-        //     //        iter.next().map(|n| *n).unwrap_or(&0),
-        //     //        iter.next().map(|n| *n).unwrap_or(&0),
-        //     //        iter.next().map(|n| *n).unwrap_or(&0)) {
-        //         (e, d, c, b, a) => {
-        //             ([e, d, c, b, a], ORDER)
-        //         }
-        //         // (Some(&b), Some(&a), None) => {
-        //         //     ([b, a, 0], 2)
-        //         // }
-        //         // (Some(&a), _, _) => {
-        //         //     ([a, 0, 0], 1)
-        //         // }
-        //         _ => {
-        //             // let last_i = rng.gen_range(0, cumul);
-        //             // ([syls[rng.gen_range(0, syls.len())], 0, 0], 1)
-        //             let last_i = rng.gen_range(0, syls.len());
-        //             ([*syls.bsearch(last_i).unwrap(), 0, 0, 0, 0], 1)
-        //         }
-        //     }
-        // };
-        // println!("{:?}", lookup);
-
-        // let lookup = model.lookup(buf.as_slice());
-
-        print!("{}", intern_syl_vec.get(chain.next()));
+    for elem in chain.take(2000_000) {
+        print!("{}", intern_syl_vec.get(elem));
     }
-    // println!("\nall:{} uniq:{}", syls.len(), intern_syl_vec.len());
 }
