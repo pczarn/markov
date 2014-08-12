@@ -811,15 +811,14 @@ impl<T: Eq + Ord> WeightedVec<T> {
                         });
                     }
                 }
-                if weighted_vec.is_empty() {
-                    weighted_vec.push(IndexedItem {
-                        end_idx: 1,
-                        item: first
-                    });
-                }
+                cumul_sum += 1;
+                weighted_vec.push(IndexedItem {
+                    end_idx: cumul_sum,
+                    item: first
+                });
                 WeightedVec {
                     inner: weighted_vec,
-                    len: cumul_sum + 1
+                    len: cumul_sum
                 }
             }
             None => WeightedVec {
@@ -888,7 +887,7 @@ fn main() {
 
     for line in reader.lines() {
         let line = line.unwrap();
-        let tokens = regex!(r"[:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s+|\s+");
+        let tokens = regex!(r"[:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s*|\s+|$");
         // let whitespace = regex!(r"\s+");
 
         // let line = whitespace.replace_all(line.as_slice(), " ");
@@ -896,7 +895,7 @@ fn main() {
         for (start, end) in tokens.find_iter(line.as_slice()) {
             let syl_untrim = line.as_slice().slice(start, end);
             let mut syl = syl_untrim.trim_right().to_string();
-            if syl.len() != syl_untrim.len() {
+            if syl.len() != syl_untrim.len() || syl_untrim.is_empty() {
                 syl.push_char(' ');
             }
 
