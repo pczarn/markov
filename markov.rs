@@ -553,7 +553,6 @@ struct MarkovModel {
     model: WeightedPatriciaTrie<WeightedVec<uint>>,
     between: Range<uint>,
     high: uint,
-    rng: rand::TaskRng,
 }
 
 impl MarkovModel {
@@ -563,7 +562,6 @@ impl MarkovModel {
             model: weighted_trie,
             between: Range::new(0, bound.weight),
             high: bound.weight,
-            rng: rand::task_rng()
         }
     }
 
@@ -603,8 +601,10 @@ impl MarkovModel {
         // println!("{:?}", node);
 
         node.and_then(|weighted_vec| {
-            assert!(rand < weighted_vec.len());
+            // assert!(rand < weighted_vec.len());
             // assert_eq!(rand, weighted_vec.len()); // NOPE
+            // weighted_vec.bsearch(rand)
+            // if weighted_vec.len() <= 2 { println!("{}; {}", weighted_vec.len(), weighted_vec.inner) };
             weighted_vec.bsearch(rand)
         }).map(|n| *n)
     }
@@ -740,7 +740,8 @@ fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
     }
 }
 
-#[deriving(Default)]
+// TODO: std​::rand​::distributions​::WeightedChoice​
+#[deriving(Default, Show)]
 struct IndexedItem<T> {
     end_idx: uint,
     item: T
@@ -816,6 +817,13 @@ impl<T: Eq + Ord> WeightedVec<T> {
                     end_idx: cumul_sum,
                     item: first
                 });
+
+                // if weighted_vec.is_empty() {
+                //     weighted_vec.push(IndexedItem {
+                //         end_idx: 1,
+                //         item: first
+                //     });
+                // }
                 WeightedVec {
                     inner: weighted_vec,
                     len: cumul_sum
@@ -876,7 +884,7 @@ fn main() {
     intern_syl.insert(space.clone(), 0);
     intern_syl_vec.push(space);
     let mut buf_syls = Vec::new();//RingBuf::new();//vec![0, 0, 0];//Vec::new();
-    let mut syls: HashMap<uint, uint> = HashMap::new();
+    // let mut syls: HashMap<uint, uint> = HashMap::new();
     
     for _ in range(0, ORDER) {
         buf_syls.push(0);
@@ -915,7 +923,7 @@ fn main() {
             // append(&mut syl_trie, buf_syls.slice_to(2), interned_syl);
             // append(&mut syl_trie, buf_syls.slice_to(1), interned_syl);
 
-            syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+            // syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
 
             // syls.push(interned_syl);
             buf_syls.pop();
@@ -923,7 +931,7 @@ fn main() {
         }
     }
 
-    let syls = WeightedVec::from_multiset(&syls);
+    // let syls = WeightedVec::from_multiset(&syls);
 
     // let model = WeightedPatriciaTrie::new();
 
@@ -932,6 +940,7 @@ fn main() {
     // }
     // unconstrained type
     // let model: WeightedPatriciaTrie<WeightedVec<uint>> = syl_trie.map(WeightedVec::from_vec);//(|mut subtree| {
+    syl_trie.print_stat();
     let mut model = MarkovModel::new(syl_trie);//(|mut subtree| {
     //     PatriciaTrie {
 
@@ -939,7 +948,6 @@ fn main() {
     // });
 
     // syl_trie.print();
-    // syl_trie.print_stat();
 
     // for i in range(0u, intern_syl_vec.len()) {
     //     match syl_trie.lookup(&[i]) {
@@ -987,14 +995,14 @@ fn main() {
         // let last_i = rng.gen_range(0, syls.len());
         // buf.push(*syls.bsearch(last_i).unwrap());
 
-    let mut rand = rng.gen_range(0, syls.len());
+    // let mut rand = model.between.sample(&mut rng);
 
-    buf.push(model.sample(&mut rng, &[], 0).unwrap());
+    // buf.push(model.sample(&mut rng, &[], 0).unwrap());
     // }
     // println!("{:?}", model);
-    println!("through with it");
+    // println!("through with it");
 
-    for _ in range(0u, 2_000_000) {
+    for _ in range(0u, 100_000) {
         // let (last, lastn) = {
         //     let mut iter = buf.iter();
         //     // match (iter.next().map(|n| *n).unwrap_or(&0),
@@ -1057,5 +1065,5 @@ fn main() {
             }
         }
     }
-    println!("\nall:{} uniq:{}", syls.len(), intern_syl_vec.len());
+    // println!("\nall:{} uniq:{}", syls.len(), intern_syl_vec.len());
 }
