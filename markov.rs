@@ -350,38 +350,43 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
     } // end loop
   }
 
-  pub fn subtree<'a>(&'a self, key: &[uint], f: |&PatriciaTrie<V, D>|) -> (&'a PatriciaTrie<V, D>, uint) {
+  pub fn subtree<'a>(&'a self, key: &[uint], f: |&PatriciaTrie<V, D>, bool|) -> (&'a PatriciaTrie<V, D>, uint) {
     let mut node = self;
     let mut key_idx = 0;
     let key_len = key.len() * uint::BITS;
 
-    // if key_len == 0 { return Some(node) }
+    // if key_len == 0 { return (node, 0) }
 
     loop {
-        // If the search key is shorter than the node prefix, there is no
-        // way we can match, so fail.
+        // // If the search key is shorter than the node prefix, there is no
+        // // way we can match, so fail.
         if key_len - key_idx < node.skip_len as uint {
-            return None;
+            return (node, key_idx);
         }
 
         // Key fails to match prefix --- no match
         if node.prefix != key.bit_slice(key_idx, key_idx + node.skip_len as uint) {
-            return None;
+            return (node, key_idx);
         }
 
         // Key matches prefix: if they are an exact match, return the data
         if node.skip_len as uint == key_len - key_idx {
-            return Some(node);
+            return (node, key_len);
         } else {
+            // f(node);
             // Key matches prefix: search key longer than node key, recurse
             key_idx += 1 + node.skip_len as uint;
-            let subtree = if key.bit(key_idx - 1) { &node.child_r } else { &node.child_l };
+            let subtree = if key.bit(key_idx - 1) {
+                // if node.child_r.is_some() { f(node) } // NOPE
+                &node.child_r
+            } else { &node.child_l };
             // println!("bit {} => {}", key_idx - 1, key.bit(key_idx - 1));
             match subtree {
                 &Some(ref bx) => {
-                  node = &**bx;  // bx is a &Box<U> here, so &**bx gets &U
+                    f(node, key.bit(key_idx - 1));
+                    node = &**bx;  // bx is a &Box<U> here, so &**bx gets &U
                 }
-                &None => { return None; }
+                &None => { return (node, key_idx - 1); }
             }
         }
     } // end loop
@@ -547,6 +552,7 @@ impl<V:Show> PatriciaTrie<V> {
 struct MarkovModel {
     model: WeightedPatriciaTrie<WeightedVec<uint>>,
     between: Range<uint>,
+    high: uint,
     rng: rand::TaskRng,
 }
 
@@ -556,34 +562,64 @@ impl MarkovModel {
         MarkovModel {
             model: weighted_trie,
             between: Range::new(0, bound.weight),
+            high: bound.weight,
             rng: rand::task_rng()
         }
     }
 
-    fn sample(&mut self, buf_slice: &[uint]) -> Option<uint> {
-        let mut rand = self.between.sample(&mut self.rng);
+    fn sample(&mut self, rng: &mut rand::TaskRng, buf_slice: &[uint], at_least: uint) -> Option<uint> {
+        let mut high = self.high;//self.between.sample(rng);
 
-        self.model.subtree(buf_slice, |subtree| {
-            // println!("rand={}", rand);
-            if rand >= subtree.data_l.weight {
-                rand -= subtree.data_l.weight;
+        // let (node, depth) = self.model.subtree(buf_slice, |subtree| {
+        //     // println!("rand={}", rand);
+        //     if rand >= subtree.data_l.weight {
+        //         rand -= subtree.data_l.weight;
+        //     }
+        // });
+        let (node, depth) = self.model.subtree(buf_slice, |subtree, dir| {
+            high = if dir {
+                high - subtree.data_l.weight
+            } else {
+                subtree.data_l.weight
             }
-        }).and_then(|lookup| {
-            let r=lookup.walk(|subtree| {
-                if rand < subtree.data_l.weight {
-                    false
-                } else {
-                    rand -= subtree.data_l.weight;
-                    true
-                }
-            });
-            // println!("{} < {}", rand, r.map(|r| r.len()))
-            r
-        }).and_then(|weighted_vec| {
+        });
+
+        // println!("{} < {}", depth, at_least);
+        if depth < at_least {
+            return None;
+        }
+
+        let mut rand = rng.gen_range(0, high);
+
+        let node = node.walk(|subtree| {
+            if rand < subtree.data_l.weight {
+                false
+            } else {
+                rand -= subtree.data_l.weight;
+                true
+            }
+        });
+
+        // println!("{:?}", node);
+
+        node.and_then(|weighted_vec| {
+            assert!(rand < weighted_vec.len());
+            // assert_eq!(rand, weighted_vec.len()); // NOPE
             weighted_vec.bsearch(rand)
         }).map(|n| *n)
     }
 }
+
+// struct MarkovChain {
+//     state: Vec<uint>,
+//     order: uint,
+//     model: MarkovModel,
+//     rng: rand::TaskRng,
+// }
+
+// impl MarkovChain {
+    
+// }
 
 // /// Iterator
 // pub struct Items<'tree, V> {
@@ -954,7 +990,7 @@ fn main() {
 
     let mut rand = rng.gen_range(0, syls.len());
 
-    buf.push(model.sample(&[]).unwrap());
+    buf.push(model.sample(&mut rng, &[], 0).unwrap());
     // }
     // println!("{:?}", model);
     println!("through with it");
@@ -993,7 +1029,8 @@ fn main() {
                 buf.as_slice()
             };
 
-            model.sample(buf_slice)
+            // model.sample(buf_slice)
+            model.sample(&mut rng, buf.as_slice(), buf.len() * uint::BITS)
         };
         // println!("{:?}", lookup);
 
@@ -1001,7 +1038,7 @@ fn main() {
 
         match lookup {
             Some(set_ref) => {
-                buf.iter().next().map(|&first| println!("{}", intern_syl_vec.get(first)));
+                print!("{}", intern_syl_vec.get(set_ref));
 
                 if buf.len() == ORDER { buf.pop(); }
                 // buf.unshift(set_ref[i]);
