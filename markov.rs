@@ -8,6 +8,7 @@ extern crate regex;
 use std::io::{BufferedReader, File};
 use std::rand;
 use std::rand::Rng;
+use std::rand::distributions::{IndependentSample, Sample, Range};
 use std::collections::hashmap::{HashMap, HashSet};
 use std::collections::TrieMap;
 use std::collections::RingBuf;
@@ -24,10 +25,6 @@ use std::default::Default;
 use std::clone::Clone;
 use std::mem;
 use std::rc::Rc;
-
-struct WeightedTrie<T> {
-_d:()
-}
 
 // struct FenwickTree
 
@@ -314,7 +311,9 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
         } // end if prefixes match
     } // end loop
   }
+}
 
+impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
   pub fn lookup<'a>(&'a self, key: &[uint]) -> Option<&'a V> {
     let mut node = self;
     let mut key_idx = 0;
@@ -327,8 +326,6 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
         if key_len - key_idx < node.skip_len as uint {
           return None;
         }
-
-
 
         // Key fails to match prefix --- no match
         if node.prefix != key.bit_slice(key_idx, key_idx + node.skip_len as uint) {
@@ -353,6 +350,62 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
     } // end loop
   }
 
+  pub fn subtree<'a>(&'a self, key: &[uint], f: |&PatriciaTrie<V, D>|) -> (&'a PatriciaTrie<V, D>, uint) {
+    let mut node = self;
+    let mut key_idx = 0;
+    let key_len = key.len() * uint::BITS;
+
+    // if key_len == 0 { return Some(node) }
+
+    loop {
+        // If the search key is shorter than the node prefix, there is no
+        // way we can match, so fail.
+        if key_len - key_idx < node.skip_len as uint {
+            return None;
+        }
+
+        // Key fails to match prefix --- no match
+        if node.prefix != key.bit_slice(key_idx, key_idx + node.skip_len as uint) {
+            return None;
+        }
+
+        // Key matches prefix: if they are an exact match, return the data
+        if node.skip_len as uint == key_len - key_idx {
+            return Some(node);
+        } else {
+            // Key matches prefix: search key longer than node key, recurse
+            key_idx += 1 + node.skip_len as uint;
+            let subtree = if key.bit(key_idx - 1) { &node.child_r } else { &node.child_l };
+            // println!("bit {} => {}", key_idx - 1, key.bit(key_idx - 1));
+            match subtree {
+                &Some(ref bx) => {
+                  node = &**bx;  // bx is a &Box<U> here, so &**bx gets &U
+                }
+                &None => { return None; }
+            }
+        }
+    } // end loop
+  }
+
+  pub fn walk<'a>(&'a self, f: |&PatriciaTrie<V, D>| -> bool) -> Option<&'a V> {
+    let mut node = self;
+
+    loop {
+        // Key matches prefix: if they are an exact match, return the data
+        if node.child_l.is_none() && node.child_r.is_none() {
+            return node.data.as_ref();
+        } else {
+            let subtree = if f(node) { &node.child_r } else { &node.child_l };
+            match subtree {
+                &Some(ref bx) => {
+                  node = &**bx;  // bx is a &Box<U> here, so &**bx gets &U
+                }
+                &None => { return None; }
+            }
+        }
+    } // end loop
+  }
+
   /// Lookup a value by exactly matching `key` and return a referenc
   pub fn lookup_mut<'a>(&'a mut self, key: &[uint]) -> Option<&'a mut V> {
     // Caution: `lookup_mut` never modifies its self parameter (in fact its
@@ -372,15 +425,13 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
   // }
 
   #[inline]
-  pub fn map<U: Default + TreeData<V>>(self,
-                recurse_left: |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>,
-                recurse_right: |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>)
-                -> PatriciaTrie<V, U> {
-    fn left<V, D: TreeData<V>, U: Default + TreeData<V>>(subtree: PatriciaTrie<V, D>,
-                                                         outer_data: &mut U,
-                                                         rl: &mut |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>,
-                                                         rr: &mut |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>)
-                                                         -> PatriciaTrie<V, U> {
+  pub fn map<Q, U: Default + TreeData<Q>>(self,
+                mut f: |V| -> Q)
+                -> (PatriciaTrie<Q, U>, U) {
+    fn left<V, D: TreeData<V>, Q, U: Default + TreeData<Q>>(subtree: PatriciaTrie<V, D>,
+                                                            outer_data: &mut U,
+                                                            f: &mut |V| -> Q)
+                                                            -> PatriciaTrie<Q, U> {
         let PatriciaTrie {
             data,
             child_l,
@@ -390,29 +441,35 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
             ..
         } = subtree;
 
-        let mut data_l = Default::default();
-        let child_l = child_l.map(|child| box left(*child, &mut data_l, rl, rr));
+        let mut data_l: U = Default::default();
+
+        let data = data.map(|d| (*f)(d));
         match data {
-            Some(ref v) => data_l.update(v),
+            Some(ref v) => outer_data.update(v),
             None => ()
         }
+        // println!("{:?}", data_l);
+        let child_l = child_l.map(|child| box left(*child, &mut data_l, f));
+        let child_r = child_r.map(|child| box right(*child, outer_data, f));
+        // println!("{:?} out", data_l);
+
         outer_data.add(&data_l);
 
         PatriciaTrie {
             data: data,
             data_l: data_l,
             child_l: child_l,
-            child_r: child_r.map(|c| box right(*c, rl, rr)),
+            child_r: child_r,
             prefix: prefix,
             skip_len: skip_len
             // skip_prefix: 0,
         }
     }
 
-    fn right<V, D: TreeData<V>, U: Default + TreeData<V>>(subtree: PatriciaTrie<V, D>,
-                                                          rl: &mut |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>,
-                                                          rr: &mut |PatriciaTrie<V, D>| -> PatriciaTrie<V, U>)
-                                                          -> PatriciaTrie<V, U> {
+    fn right<V, D: TreeData<V>, Q, U: Default + TreeData<Q>>(subtree: PatriciaTrie<V, D>,
+                                                             outer_data: &mut U,
+                                                             f: &mut |V| -> Q)
+                                                             -> PatriciaTrie<Q, U> {
         let PatriciaTrie {
             data,
             child_l,
@@ -422,20 +479,33 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
             ..
         } = subtree;
 
-        let mut data_l = Default::default();
-        let child_l = child_l.map(|child| box left(*child, &mut data_l, rl, rr));
+        let mut data_l: U = Default::default();
+
+        let data = data.map(|d| (*f)(d));
+        match data {
+            Some(ref v) => outer_data.update(v),
+            None => ()
+        }
+
+        let child_l = child_l.map(|child| box left(*child, &mut data_l, f));
+        let child_r = child_r.map(|child| box right(*child, outer_data, f));
+
+        outer_data.add(&data_l);
 
         PatriciaTrie {
             data: data,
             data_l: data_l,
             child_l: child_l,
-            child_r: child_r.map(|c| box right(*c, rl, rr)),
+            child_r: child_r,
             prefix: prefix,
             skip_len: skip_len
             // skip_prefix: 0,
         }
     }
-    right(self, &mut recurse_left, &mut recurse_right)
+    let mut data_l = Default::default();
+    let t = left(self, &mut data_l, &mut f);
+    // println!("{:?}", data_l);
+    (t, data_l)
   }
 }
 
@@ -472,6 +542,47 @@ impl<V:Show> PatriciaTrie<V> {
     }
     recurse(self, 0);
   }
+}
+
+struct MarkovModel {
+    model: WeightedPatriciaTrie<WeightedVec<uint>>,
+    between: Range<uint>,
+    rng: rand::TaskRng,
+}
+
+impl MarkovModel {
+    fn new(trie: PatriciaTrie<Vec<uint>>) -> MarkovModel {
+        let (weighted_trie, bound) = trie.map(|v| WeightedVec::from_vec(v));
+        MarkovModel {
+            model: weighted_trie,
+            between: Range::new(0, bound.weight),
+            rng: rand::task_rng()
+        }
+    }
+
+    fn sample(&mut self, buf_slice: &[uint]) -> Option<uint> {
+        let mut rand = self.between.sample(&mut self.rng);
+
+        self.model.subtree(buf_slice, |subtree| {
+            // println!("rand={}", rand);
+            if rand >= subtree.data_l.weight {
+                rand -= subtree.data_l.weight;
+            }
+        }).and_then(|lookup| {
+            let r=lookup.walk(|subtree| {
+                if rand < subtree.data_l.weight {
+                    false
+                } else {
+                    rand -= subtree.data_l.weight;
+                    true
+                }
+            });
+            // println!("{} < {}", rand, r.map(|r| r.len()))
+            r
+        }).and_then(|weighted_vec| {
+            weighted_vec.bsearch(rand)
+        }).map(|n| *n)
+    }
 }
 
 // /// Iterator
@@ -593,13 +704,14 @@ fn append(trie: &mut PatriciaTrie<Vec<uint>>, slice: &[uint], elem: uint) {
     }
 }
 
-static ORDER: uint = 5;
-
+#[deriving(Default)]
 struct IndexedItem<T> {
     end_idx: uint,
     item: T
 }
 
+// ?
+#[deriving(Default)]
 struct WeightedVec<T> {
     inner: Vec<IndexedItem<T>>,
     len: uint
@@ -642,22 +754,66 @@ impl<T: Copy + Eq + Hash> WeightedVec<T> {
     }
 }
 
+impl<T: Eq + Ord> WeightedVec<T> {
+    pub fn from_vec(mut vec: Vec<T>) -> WeightedVec<T> {
+        vec.sort();
+        let mut iter = vec.move_iter();
+        match iter.next() {
+            Some(mut first) => {
+                let mut cumul_sum = 0;
+                let mut weighted_vec = vec![];
+                // IndexedItem {
+                //     end_idx: cumul_sum,
+                //     item: mem::replace(&mut first, v)
+                // }];
+                for v in iter {
+                    cumul_sum += 1;
+                    if v != first {
+                        weighted_vec.push(IndexedItem {
+                            end_idx: cumul_sum,
+                            item: mem::replace(&mut first, v)
+                        });
+                    }
+                }
+                if weighted_vec.is_empty() {
+                    weighted_vec.push(IndexedItem {
+                        end_idx: 1,
+                        item: first
+                    });
+                }
+                WeightedVec {
+                    inner: weighted_vec,
+                    len: cumul_sum + 1
+                }
+            }
+            None => WeightedVec {
+                inner: vec![],
+                len: 0
+            }
+        }
+    }
+}
+
 impl<T> WeightedVec<T> {
     fn bsearch<'a>(&'a self, idx: uint) -> Option<&'a T> {
+        // println!("idx={} {:?}", idx, self);
         let mut base: uint = 0;
         let mut lim: uint = self.inner.len();
 
         while lim != 0 {
             let ix = base + (lim >> 1);
-            if idx >= self.inner[ix].end_idx {
+            // println!("ix={}", ix);
+            if idx > self.inner[ix].end_idx {
                 base = ix + 1;
                 lim -= 1;
-            } else if idx >= self.inner[ix - 1].end_idx {
+                // println!("less than self.inner[{}].end_idx={} base={} lim={}", ix, self.inner[ix].end_idx, base, lim);
+            } else if ix == 0 || idx >= self.inner[ix - 1].end_idx {
                 return Some(&self.inner[ix].item);
             }
             lim >>= 1;
         }
-        return None;
+        // return None;
+        Some(&self.inner[0].item)
     }
 }
 
@@ -666,6 +822,8 @@ impl<T> Collection for WeightedVec<T> {
         self.len
     }
 }
+
+static ORDER: uint = 3;
 
 fn main() {
     let mut intern_syl: HashMap<Rc<String>, uint> = HashMap::new();
@@ -737,7 +895,9 @@ fn main() {
     // for set_ref in syl_trie.iter() {
     //     model.insert(key, set_ref);
     // }
-    let model = syl_trie.map();//(|mut subtree| {
+    // unconstrained type
+    // let model: WeightedPatriciaTrie<WeightedVec<uint>> = syl_trie.map(WeightedVec::from_vec);//(|mut subtree| {
+    let mut model = MarkovModel::new(syl_trie);//(|mut subtree| {
     //     PatriciaTrie {
 
     //     }
@@ -789,11 +949,17 @@ fn main() {
     let mut buf = Vec::with_capacity(ORDER);
 
     // for _ in range(0u, ORDER) {
-        let last_i = rng.gen_range(0, syls.len());
-        buf.push(*syls.bsearch(last_i).unwrap());
-    // }
+        // let last_i = rng.gen_range(0, syls.len());
+        // buf.push(*syls.bsearch(last_i).unwrap());
 
-    for _ in range(0u, 2_000) {
+    let mut rand = rng.gen_range(0, syls.len());
+
+    buf.push(model.sample(&[]).unwrap());
+    // }
+    // println!("{:?}", model);
+    println!("through with it");
+
+    for _ in range(0u, 2_000_000) {
         // let (last, lastn) = {
         //     let mut iter = buf.iter();
         //     // match (iter.next().map(|n| *n).unwrap_or(&0),
@@ -818,35 +984,39 @@ fn main() {
         //         }
         //     }
         // };
-        let mut rand = syls.len();
-        let lookup = syl_trie.subtree(buf.slice_to(rng.gen_range(0, buf.len())), |subtree| {
-            if rand >= subtree.data_l.weight {
-                rand -= subtree.data_l.weight;
-            }
-        }).walk(|subtree| {
-            if rand < subtree.data_l.weight {
-                false
+        let lookup = {
+            let buf_slice = if buf.len() >= 2 {
+                buf.slice_to(rng.gen_range(buf.len() - 2, buf.len()))
+            // } else if buf.is_empty() {
+            //     buf.as_slice()
             } else {
-                rand -= subtree.data_l.weight;
-                true
-            }
-        });
+                buf.as_slice()
+            };
 
-        // let lookup = syl_trie.lookup(buf.as_slice());
+            model.sample(buf_slice)
+        };
+        // println!("{:?}", lookup);
+
+        // let lookup = model.lookup(buf.as_slice());
 
         match lookup {
             Some(set_ref) => {
-                let len = set_ref.len();
-                let i = rng.gen_range(0, len);
-                let last = buf[0];
+                buf.iter().next().map(|&first| println!("{}", intern_syl_vec.get(first)));
+
                 if buf.len() == ORDER { buf.pop(); }
-                buf.unshift(set_ref[i]);
-                print!("{}", intern_syl_vec.get(last));
+                // buf.unshift(set_ref[i]);
+                // println!("{} .. {}", i, len);
+                // let len = set_ref.len();
+                // let i = rng.gen_range(0, len);
+                // buf.unshift(*set_ref.bsearch(i).unwrap());
+                buf.unshift(set_ref);
             }
             None => {
                 buf.pop();
-                let last_i = rng.gen_range(0, syls.len());
-                buf.unshift(*syls.bsearch(last_i).unwrap());
+                // if buf.is_empty() {
+                //     let last_i = rng.gen_range(0, syls.len());
+                //     buf.unshift(*syls.bsearch(last_i).unwrap());
+                // }
                 // last = syls[rng.gen_range(0, syls.len())];
             }
         }
