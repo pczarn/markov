@@ -565,7 +565,7 @@ impl MarkovModel {
         }
     }
 
-    fn sample(&mut self, rng: &mut rand::TaskRng, buf_slice: &[uint], at_least: uint) -> Option<uint> {
+    fn sample(&self, rng: &mut rand::TaskRng, buf_slice: &[uint], at_least: uint) -> Option<uint> {
         let mut high = self.high;//self.between.sample(rng);
 
         // let (node, depth) = self.model.subtree(buf_slice, |subtree| {
@@ -610,16 +610,59 @@ impl MarkovModel {
     }
 }
 
-// struct MarkovChain {
-//     state: Vec<uint>,
-//     order: uint,
-//     model: MarkovModel,
-//     rng: rand::TaskRng,
-// }
+struct MarkovChain {
+    state: Vec<uint>,
+    order: uint,
+    model: MarkovModel,
+    rng: rand::TaskRng,
+}
 
-// impl MarkovChain {
-    
-// }
+impl MarkovChain {
+    fn new(model: MarkovModel, order: uint) -> MarkovChain {
+        MarkovChain {
+            state: Vec::with_capacity(order),
+            order: order,
+            model: model,
+            rng: rand::task_rng(),
+        }
+    }
+
+    fn next(&mut self) -> uint {
+        // let buf_slice = if buf.len() >= 2 {
+        //     buf.slice_to(rng.gen_range(buf.len() - 2, buf.len()))
+        // // } else if buf.is_empty() {
+        // //     buf.as_slice()
+        // } else {
+        //     buf.as_slice()
+        // };
+
+        // model.sample(buf_slice)
+        loop {
+            let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.state.len() * uint::BITS);
+
+            match sample {
+                Some(elem) => {
+                    if self.state.len() == self.order { self.state.pop(); }
+                    // buf.unshift(set_ref[i]);
+                    // println!("{} .. {}", i, len);
+                    // let len = set_ref.len();
+                    // let i = rng.gen_range(0, len);
+                    // buf.unshift(*set_ref.bsearch(i).unwrap());
+                    self.state.unshift(elem);
+                    return elem;
+                }
+                None => {
+                    self.state.pop();
+                    // if buf.is_empty() {
+                    //     let last_i = rng.gen_range(0, syls.len());
+                    //     buf.unshift(*syls.bsearch(last_i).unwrap());
+                    // }
+                    // last = syls[rng.gen_range(0, syls.len())];
+                }
+            }
+        }
+    }
+}
 
 // /// Iterator
 // pub struct Items<'tree, V> {
@@ -940,8 +983,11 @@ fn main() {
     // }
     // unconstrained type
     // let model: WeightedPatriciaTrie<WeightedVec<uint>> = syl_trie.map(WeightedVec::from_vec);//(|mut subtree| {
-    syl_trie.print_stat();
-    let mut model = MarkovModel::new(syl_trie);//(|mut subtree| {
+    // syl_trie.print_stat();
+    let model = MarkovModel::new(syl_trie);
+    let mut chain = MarkovChain::new(model, ORDER);
+
+    //(|mut subtree| {
     //     PatriciaTrie {
 
     //     }
@@ -982,14 +1028,14 @@ fn main() {
 
     // println!("{:?}", syl_trie.lookup(path.as_slice()));
 
-    let mut rng = rand::task_rng();
+    // let mut rng = rand::task_rng();
 
     // let i: uint = rng.gen_range();
     // let mut last = vec![*rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap()];//intern_syl_vec.get(last_i);
     // println!("{}", last);
 
     // let mut buf = RingBuf::with_capacity(ORDER);
-    let mut buf = Vec::with_capacity(ORDER);
+    // let mut buf = Vec::with_capacity(ORDER);
 
     // for _ in range(0u, ORDER) {
         // let last_i = rng.gen_range(0, syls.len());
@@ -1002,7 +1048,7 @@ fn main() {
     // println!("{:?}", model);
     // println!("through with it");
 
-    for _ in range(0u, 100_000) {
+    for _ in range(0u, 2000_000) {
         // let (last, lastn) = {
         //     let mut iter = buf.iter();
         //     // match (iter.next().map(|n| *n).unwrap_or(&0),
@@ -1027,43 +1073,11 @@ fn main() {
         //         }
         //     }
         // };
-        let lookup = {
-            let buf_slice = if buf.len() >= 2 {
-                buf.slice_to(rng.gen_range(buf.len() - 2, buf.len()))
-            // } else if buf.is_empty() {
-            //     buf.as_slice()
-            } else {
-                buf.as_slice()
-            };
-
-            // model.sample(buf_slice)
-            model.sample(&mut rng, buf.as_slice(), buf.len() * uint::BITS)
-        };
         // println!("{:?}", lookup);
 
         // let lookup = model.lookup(buf.as_slice());
 
-        match lookup {
-            Some(set_ref) => {
-                print!("{}", intern_syl_vec.get(set_ref));
-
-                if buf.len() == ORDER { buf.pop(); }
-                // buf.unshift(set_ref[i]);
-                // println!("{} .. {}", i, len);
-                // let len = set_ref.len();
-                // let i = rng.gen_range(0, len);
-                // buf.unshift(*set_ref.bsearch(i).unwrap());
-                buf.unshift(set_ref);
-            }
-            None => {
-                buf.pop();
-                // if buf.is_empty() {
-                //     let last_i = rng.gen_range(0, syls.len());
-                //     buf.unshift(*syls.bsearch(last_i).unwrap());
-                // }
-                // last = syls[rng.gen_range(0, syls.len())];
-            }
-        }
+        print!("{}", intern_syl_vec.get(chain.next()));
     }
     // println!("\nall:{} uniq:{}", syls.len(), intern_syl_vec.len());
 }
