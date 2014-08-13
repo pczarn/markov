@@ -129,16 +129,16 @@ class MyspellHyph
    end
 end
 
-src = SourceText.new('data/eugene.txt')
+src = SourceText.new('data/ASOIAF.txt')
 word_list = DictHyph.new('data/mhyph.txt')
 myspell_dict = MyspellHyph.new('/usr/share/myspell/dicts/hyph_en_US.dic')
 
-order = 2
+order = 6
 
 model = MarkovModel.new(order)
 model.train(src.syllables(word_list, myspell_dict))
 
-chain = 100000.times.map do
+chain = 2_000.times.map do
    model.resume
 end
 
