@@ -568,6 +568,7 @@ impl MarkovModel {
 
 struct MarkovChain {
     state: Vec<uint>,
+    last_meaningful: uint,
     order: uint,
     model: MarkovModel,
     rng: rand::TaskRng,
@@ -577,6 +578,7 @@ impl MarkovChain {
     fn new(model: MarkovModel, order: uint) -> MarkovChain {
         MarkovChain {
             state: Vec::with_capacity(order),
+            last_meaningful: 0,
             order: order,
             model: model,
             rng: rand::task_rng(),
@@ -587,16 +589,28 @@ impl MarkovChain {
 impl Iterator<uint> for MarkovChain {
     fn next(&mut self) -> Option<uint> {
         loop {
-            let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.state.len() * uint::BITS);
+            let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.last_meaningful * uint::BITS);
 
             match sample {
                 Some(elem) => {
-                    if self.state.len() == self.order { self.state.pop(); }
+                    if self.rng.gen_range(0, self.order * 8 - self.state.len() * 2) < self.order {
+                        self.state.pop();
+                        self.state.pop();
+                        // self.last_meaningful = cmp::max(self.last_meaningful, 1) - 1;
+                        self.last_meaningful = 0;
+                        // println!("#");
+                    } else if self.state.len() == self.order {
+                        self.state.pop();
+                    }
+                    else {
+                        self.last_meaningful += 1;
+                    }
                     self.state.unshift(elem);
                     return Some(elem);
                 }
                 None => {
                     self.state.pop();
+                    self.last_meaningful -= 1;
                 }
             }
         }
