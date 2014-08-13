@@ -513,7 +513,6 @@ impl<V:Show> PatriciaTrie<V> {
 
 struct MarkovModel {
     model: WeightedPatriciaTrie<WeightedVec<uint>>,
-    between: Range<uint>,
     total_weight: uint,
 }
 
@@ -522,7 +521,6 @@ impl MarkovModel {
         let (weighted_trie, bound) = trie.map(|v| WeightedVec::from_vec(v));
         MarkovModel {
             model: weighted_trie,
-            between: Range::new(0, bound.weight),
             total_weight: bound.weight,
         }
     }
@@ -588,14 +586,6 @@ impl MarkovChain {
 
 impl Iterator<uint> for MarkovChain {
     fn next(&mut self) -> Option<uint> {
-        // let buf_slice = if buf.len() >= 2 {
-        //     buf.slice_to(rng.gen_range(buf.len() - 2, buf.len()))
-        // // } else if buf.is_empty() {
-        // //     buf.as_slice()
-        // } else {
-        //     buf.as_slice()
-        // };
-
         loop {
             let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.state.len() * uint::BITS);
 
@@ -815,12 +805,7 @@ fn main() {
     let space = Rc::new(" ".to_string());
     intern_syl.insert(space.clone(), 0);
     intern_syl_vec.push(space);
-    let mut buf_syls = Vec::new();//RingBuf::new();//vec![0, 0, 0];//Vec::new();
-    // let mut syls: HashMap<uint, uint> = HashMap::new();
-    
-    for _ in range(0, ORDER) {
-        buf_syls.push(0);
-    }
+    let mut buf_syls = Vec::from_elem(ORDER, 0);
 
     let file = File::open(&Path::new("data/ASOIAF.txt"));
     let mut reader = BufferedReader::new(file);
@@ -852,92 +837,18 @@ fn main() {
             // syllable_multiset.push(interned_syl);
 
             append(&mut syl_trie, buf_syls.as_slice(), interned_syl);
-            // append(&mut syl_trie, buf_syls.slice_to(2), interned_syl);
-            // append(&mut syl_trie, buf_syls.slice_to(1), interned_syl);
 
-            // syls.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
-
-            // syls.push(interned_syl);
             buf_syls.pop();
             buf_syls.unshift(interned_syl);
         }
     }
 
-    // let syls = WeightedVec::from_multiset(&syls);
+    // TODO: deserialize
 
-    // let model = WeightedPatriciaTrie::new();
-
-    // for set_ref in syl_trie.iter() {
-    //     model.insert(key, set_ref);
-    // }
-    // unconstrained type
-    // let model: WeightedPatriciaTrie<WeightedVec<uint>> = syl_trie.map(WeightedVec::from_vec);//(|mut subtree| {
-    // syl_trie.print_stat();
     let model = MarkovModel::new(syl_trie);
     let mut chain = MarkovChain::new(model, ORDER);
 
-    //(|mut subtree| {
-    //     PatriciaTrie {
-
-    //     }
-    // });
-
-    // syl_trie.print();
-
-    // for i in range(0u, intern_syl_vec.len()) {
-    //     match syl_trie.lookup(&[i]) {
-    //         Some(set_ref) => {
-    //             println!("{} => {}!!", i, set_ref);
-    //         }
-    //         None => {
-    //             println!("None: {}", i);
-    //         }
-    //     }
-    // }
-
-    // intern_syl.insert("Ala".to_string(), 0);
-    // intern_syl.insert(" ".to_string(), 1);
-    // intern_syl.insert("ma".to_string(), 2);
-    // intern_syl.insert("ko".to_string(), 3);
-    // intern_syl.insert("ta".to_string(), 4);
-
-    // syllable_multiset.insert(4, 1);
-
-    // let path = [3u, 2];
-
-    // println!("{:?}", syl_trie);
-    // syl_trie.print();
-    // println!("{}", syllable_multiset);
-
-    // // syl_trie.insert(path.as_slice(), 12345);
-    // // syl_trie.insert(path.as_slice().slice_to(1), 6789u);
-
-    // // println!("{:?}", syl_trie);
-    // // println!("{:?}", path.as_slice().bit_slice(1, 65));
-
-    // println!("{:?}", syl_trie.lookup(path.as_slice()));
-
-    // let mut rng = rand::task_rng();
-
-    // let i: uint = rng.gen_range();
-    // let mut last = vec![*rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap(), *rng.choose(syls.as_slice()).unwrap()];//intern_syl_vec.get(last_i);
-    // println!("{}", last);
-
-    // let mut buf = RingBuf::with_capacity(ORDER);
-    // let mut buf = Vec::with_capacity(ORDER);
-
-    // for _ in range(0u, ORDER) {
-        // let last_i = rng.gen_range(0, syls.len());
-        // buf.push(*syls.bsearch(last_i).unwrap());
-
-    // let mut rand = model.between.sample(&mut rng);
-
-    // buf.push(model.sample(&mut rng, &[], 0).unwrap());
-    // }
-    // println!("{:?}", model);
-    // println!("through with it");
-
-    for elem in chain.take(2000_000) {
+    for elem in chain.take(2_000_000) {
         print!("{}", intern_syl_vec.get(elem));
     }
 }
