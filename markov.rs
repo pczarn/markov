@@ -1,6 +1,5 @@
-#![feature(phase, default_type_params)]
+#![feature(phase, default_type_params, while_let)]
 
-extern crate debug;
 #[phase(plugin)]
 extern crate regex_macros;
 extern crate regex;
@@ -9,23 +8,27 @@ use std::io::{BufferedReader, File};
 use std::rand;
 use std::rand::Rng;
 use std::rand::distributions::{IndependentSample, Sample, Range};
-use std::collections::hashmap::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::collections::TrieMap;
 use std::collections::RingBuf;
-use std::collections::Deque;
-use std::collections::Collection;
 use std::cmp;
 use std::cmp::{Ord, Equal, Greater, Less};
 use std::mem::size_of;
 use std::uint;
+use std::u8;
+use std::u64;
 use std::fmt::Show;
-use std::slice::ImmutableVector;
 use std::hash::Hash;
 use std::default::Default;
 use std::clone::Clone;
 use std::mem;
 use std::rc::Rc;
 use std::iter::Iterator;
+use std::str;
+use std::slice::SlicePrelude;
+
+use std::io::extensions::u64_from_be_bytes;
 
 // struct FenwickTree
 
@@ -44,11 +47,14 @@ use std::iter::Iterator;
 
 /// A trait which allows numbers to act as fixed-size bit arrays
 pub trait BitArray {
-  /// Is bit set?
+  /// Is this bit set?
   fn bit(&self, idx: uint) -> bool;
 
   /// Returns an array which is just the bits from start to end
   fn bit_slice(&self, start: uint, end: uint) -> uint;
+
+  /// 
+  fn len_bits(&self) -> uint;
 }
 
 impl BitArray for uint {
@@ -60,6 +66,72 @@ impl BitArray for uint {
     /// Returns an array which is just the bits from start to end
     fn bit_slice(&self, start: uint, end: uint) -> uint {
         (*self & (1 << end) - 1) >> start
+    }
+
+    fn len_bits(&self) -> uint {
+        uint::BITS
+    }
+}
+
+pub fn u64_from_le_bytes(data: &[u8], start: uint, size: uint) -> u64 {
+    use std::ptr::{copy_nonoverlapping_memory};
+    use std::num::Int;
+
+    assert!(size <= 8u);
+
+    if data.len() - start < size {
+        panic!("index out of bounds");
+    }
+
+    let mut buf = [0u8, ..8];
+    unsafe {
+        let ptr = data.as_ptr().offset(start as int);
+        let out = buf.as_mut_ptr();
+        copy_nonoverlapping_memory(out.offset((8 - size) as int), ptr, size);
+        Int::from_le(*(out as *const u64))
+    }
+}
+
+impl<'a> BitArray for &'a [u8] {
+    /// Is bit set?
+    fn bit(&self, idx: uint) -> bool {
+        (self[idx / u8::BITS] >> (idx % u8::BITS)) & 1 == 1
+    }
+
+    /// Returns an array which is just the bits from start to end
+    fn bit_slice(&self, start: uint, end: uint) -> uint {
+        // FIXME check for start oob?
+        if start == end { return 0 }
+        // if end - start == uint::BITS { return self[] }
+        // if (end + u8::BITS - 1) / u8::BITS - start / u8::BITS > 8 {
+        //     println!("{} {} {}", start, end, (end + u8::BITS - 1 - start) / u8::BITS)
+        // }
+        println!("{}-{}: {}-{} {}-{}", start, end, start / u8::BITS, (end + u8::BITS - 1 - start) / u8::BITS, start % u8::BITS, end - start + (start % u8::BITS))
+        let r = u64_from_le_bytes(*self, start / u8::BITS, (end + u8::BITS - 1 - start) / u8::BITS) as uint;
+        if end - start == 64 {
+            r
+        } else {
+            // let start = ;
+            r.bit_slice(start % u8::BITS, end - start + (start % u8::BITS))
+        }
+
+        // if (start / uint::BITS) == (end / uint::BITS) {
+        //     self[start / uint::BITS].bit_slice(start % uint::BITS, end % uint::BITS)
+        // } else if end % uint::BITS == 0 && end - start <= 64 {
+        //     self[start / uint::BITS] >> (start % uint::BITS)
+        // } else if end - start <= 64 {
+        //     ((self[start / uint::BITS] >> (start % uint::BITS))
+        //      | (
+        //         (self[end / uint::BITS] & (end % uint::BITS))
+        //             <<
+        //         (uint::BITS - (start % uint::BITS))))
+        // } else {
+        //     fail!("invalid range from {} to {}", start, end);
+        // }
+    }
+
+    fn len_bits(&self) -> uint {
+        self.len() * u8::BITS
     }
 }
 
@@ -85,8 +157,12 @@ impl<'a> BitArray for &'a [uint] {
                     <<
                 (uint::BITS - (start % uint::BITS))))
         } else {
-            fail!("invalid range from {} to {}", start, end);
+            panic!("invalid range from {} to {}", start, end);
         }
+    }
+
+    fn len_bits(&self) -> uint {
+        self.len() * uint::BITS
     }
 }
 
@@ -160,10 +236,10 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
     }
   }
 
-  fn insert(&mut self, key: &[uint], value: V) -> bool {
+  fn insert<K: BitArray>(&mut self, key: K, value: V) -> bool {
     let mut node = self;
     let mut idx = 0;
-    let key_len = key.len() * uint::BITS;
+    let key_len = key.len_bits();
 
     // println!("insert({})", key);
     loop {
@@ -250,8 +326,8 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
                       });
 
                     }
-                    // subtree.get_mut_ref is a &mut Box<U> here, so &mut ** gets a &mut U
-                    node = &mut **subtree.get_mut_ref();
+                    // subtree.as_mut().unwrap() is a &mut Box<U> here, so &mut ** gets a &mut U
+                    node = &mut **subtree.as_mut().unwrap();
                 }
             } // end search_len vs prefix len
         }
@@ -308,17 +384,18 @@ impl<V, D: Clone + Default + TreeData<V>> PatriciaTrie<V, D> {
             // Recurse
             // println!("recurse");
             idx += 1 + diff;
-            node = &mut **insert.get_mut_ref();
+            node = &mut **insert.as_mut().unwrap();
         } // end if prefixes match
     } // end loop
   }
 }
 
 impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
-  pub fn lookup<'a>(&'a self, key: &[uint]) -> Option<&'a V> {
+  pub fn lookup<'a, K: BitArray>(&'a self, key: K) -> Option<&'a V> {
     let mut node = self;
     let mut key_idx = 0;
-    let key_len = key.len() * uint::BITS;
+    // let key_len = key.len() * uint::BITS;
+    let key_len = key.len_bits();
 
     // println!("lookup({})", key);
     loop {
@@ -351,6 +428,16 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
     } // end loop
   }
 
+  /// Lookup a value by exactly matching `key` and return a ref
+  pub fn lookup_mut<'a>(&'a mut self, key: &[uint]) -> Option<&'a mut V> {
+    use std::mem::transmute;
+    let res: Option<&'a V> = self.lookup(key);
+    let res: Option<&'a mut V> = unsafe { transmute(res) };
+    res
+  }
+}
+
+impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
   pub fn subtree<'a>(&'a self, key: &[uint], f: |&PatriciaTrie<V, D>, bool|) -> (&'a PatriciaTrie<V, D>, uint) {
     let mut node = self;
     let mut key_idx = 0;
@@ -410,15 +497,6 @@ impl<V, D: Default + TreeData<V>> PatriciaTrie<V, D> {
             }
         }
     } // end loop
-  }
-
-  /// Lookup a value by exactly matching `key` and return a referenc
-  pub fn lookup_mut<'a>(&'a mut self, key: &[uint]) -> Option<&'a mut V> {
-    // Caution: `lookup_mut` never modifies its self parameter (in fact its
-    // internal recursion uses a non-mutable self, so we are OK to just
-    // transmute our self pointer into a mutable self before passing it in.
-    use std::mem::transmute;
-    unsafe { transmute(self.lookup(key)) }
   }
 
   // /// Returns an iterator over all elements in the tree
@@ -534,6 +612,7 @@ impl MarkovModel {
         //         rand -= subtree.data_l.weight;
         //     }
         // });
+        // print!("@");
         let (node, depth) = self.model.subtree(buf_slice, |subtree, dir| {
             high = if dir {
                 high - subtree.data_l.weight
@@ -542,13 +621,14 @@ impl MarkovModel {
             }
         });
 
-        // println!("{} < {}", depth, at_least);
+        // print!("[{}<{}]", depth, at_least);
         if depth < at_least {
             return None;
         }
 
         let mut rand = rng.gen_range(0, high);
 
+        // print!("$");
         node.walk(|subtree| {
             if rand < subtree.data_l.weight {
                 false
@@ -557,6 +637,7 @@ impl MarkovModel {
                 true
             }
         }).and_then(|weighted_vec| {
+            // print!("%")
             // assert!(rand < weighted_vec.len());
             // assert_eq!(rand, weighted_vec.len()); // NOPE
             // weighted_vec.bsearch(rand)
@@ -589,6 +670,7 @@ impl MarkovChain {
 impl Iterator<uint> for MarkovChain {
     fn next(&mut self) -> Option<uint> {
         loop {
+            // println!(";\n:: {} #{}:{}", self.last_meaningful, self.state.len(), self.state)
             let sample = self.model.sample(&mut self.rng, self.state.as_slice(), self.last_meaningful * uint::BITS);
 
             match sample {
@@ -605,7 +687,7 @@ impl Iterator<uint> for MarkovChain {
                     else {
                         self.last_meaningful += 1;
                     }
-                    self.state.unshift(elem);
+                    self.state.insert(0, elem);
                     return Some(elem);
                 }
                 None => {
@@ -739,7 +821,7 @@ impl<T: Copy + Eq + Hash> WeightedVec<T> {
 impl<T: Eq + Ord> WeightedVec<T> {
     pub fn from_vec(mut vec: Vec<T>) -> WeightedVec<T> {
         vec.sort();
-        let mut iter = vec.move_iter();
+        let mut iter = vec.into_iter();
         match iter.next() {
             Some(mut first) => {
                 let mut cumul_sum = 0;
@@ -796,15 +878,58 @@ impl<T> WeightedVec<T> {
     }
 }
 
+trait Collection {
+    fn len(&self) -> uint;
+}
+
 impl<T> Collection for WeightedVec<T> {
     fn len(&self) -> uint {
         self.len
     }
 }
 
-static ORDER: uint = 3;
+static ORDER: uint = 6;
 
 fn main() {
+    // DST ?
+    let mut dict_trie: PatriciaTrie<Vec<u16>> = PatriciaTrie::new();
+    let file = File::open(&Path::new("/usr/share/myspell/dicts/hyph_en_US.dic"));
+    let mut reader = BufferedReader::new(file);
+
+    for line in reader.lines().skip(3) {
+        let line = line.unwrap();
+        let mut buf = [0u16, ..32];
+        let mut i = 0u;
+        // let mut s = String::with_capacity(line.len() / 2);
+        let mut s = Vec::with_capacity(line.len() / 2);
+        for ch in line.as_slice().trim().chars() {
+            if ch.is_digit() {
+                let n = ch.to_digit(10).unwrap();
+                let mut x = (1 << ((n + 1) >> 1)) - 1;
+                if n & 1 == 0 {
+                    x |= x << 8;
+                }
+                buf[i] = x;
+                println!("{} {}", x, buf.slice_to(i));
+            } else {
+                s.push(ch as uint);
+                if i > 32 { println!("{}", i); }
+                i += 1;
+            }
+        }
+
+        if buf[i] != 0 {
+            i += 1;
+        }
+
+        // impl BitStream for &[T]
+        let b=dict_trie.insert(s.as_slice(), buf.slice_to(i).to_vec());
+        println!("{} => {} {}", s, buf.slice_to(i), b);
+        assert_eq!(Some(buf.slice_to(i)), dict_trie.lookup(s.as_slice()).map(|x|x.as_slice()));
+        println!("");
+    }
+    // println!("{}", dict_trie.lookup("ttes".as_bytes()));
+
     let mut intern_syl: HashMap<Rc<String>, uint> = HashMap::new();
     let mut intern_syl_vec: Vec<Rc<String>> = Vec::new();
     // let mut syllable_multiset: Vec<uint> = Vec::new();
@@ -824,38 +949,88 @@ fn main() {
     let file = File::open(&Path::new("data/ASOIAF.txt"));
     let mut reader = BufferedReader::new(file);
 
-    for line in reader.lines() {
-        let line = line.unwrap();
-        let tokens = regex!(r"[:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s*|\s+|$");
-        // let whitespace = regex!(r"\s+");
+    let tokens = regex!(r"[:\d\.]+|[\p{Alphabetic}'-]+|\p{P}\s*|\s+|$");
 
-        // let line = whitespace.replace_all(line.as_slice(), " ");
+    let mut wraparound_buf = String::new();
 
-        for (start, end) in tokens.find_iter(line.as_slice()) {
-            let syl_untrim = line.as_slice().slice(start, end);
-            let mut syl = syl_untrim.trim_right().to_string();
-            if syl.len() != syl_untrim.len() || syl_untrim.is_empty() {
-                syl.push_char(' ');
+    while let Ok(buf) = reader.fill_buf() {
+        let buf = str::from_utf8(buf).unwrap();
+        let buf = if wraparound_buf.is_empty() {
+            buf
+        } else {
+            let end = match tokens.find(buf) {
+                Some((start, end)) => {
+                    // let (beginning, rest) = buf.split_at(end);
+                    wraparound_buf.push_str(buf.slice_to(end));
+                    end
+                }
+                None => continue
+            };
+            buf.slice_from(end)
+        };
+
+        // for (start, end) in tokens.find_iter(wraparound_buf.as_slice()).chain(tokens.find_iter(buf)) {
+        for (start, end) in tokens.find_iter(buf) {
+            if end == buf.len() && start != end {
+                wraparound_buf.push_str(buf.slice_from(start));
             }
 
-            let i = intern_syl.len();
-            let interned_syl = *intern_syl.find_with_or_insert_with(Rc::new(syl),
-                                                                    i,
-                                                                    |_k, _v, _a| (),
-                                                                    |k, a| {
-                                                                        intern_syl_vec.push(k.clone());
-                                                                        a
-                                                                    });
+            let syl_untrim = buf.slice(start, end);
+            let mut syl = syl_untrim.trim_right().into_string();
+            if syl.len() != syl_untrim.len() || syl_untrim.is_empty() {
+                syl.push(' ');
+            }
 
-            // syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
-            // syllable_multiset.push(interned_syl);
+            let idx = intern_syl.len();
+            let rcstr = Rc::new(syl);
+            let interned_syl =
+            match intern_syl.entry(rcstr.clone()) {
+                Entry::Vacant(elem) => {
+                    elem.set(idx);
+                    intern_syl_vec.push(rcstr);
+                    idx
+                }
+                Entry::Occupied(elem) =>
+                    *elem.get(),
+            };
 
             append(&mut syl_trie, buf_syls.as_slice(), interned_syl);
-
             buf_syls.pop();
-            buf_syls.unshift(interned_syl);
+            buf_syls.insert(0, interned_syl);
         }
     }
+
+    // for line in reader.lines() {
+    //     let line = line.unwrap();
+    //     // let whitespace = regex!(r"\s+");
+
+    //     // let line = whitespace.replace_all(line.as_slice(), " ");
+
+    //     for (start, end) in tokens.find_iter(line.as_slice()) {
+    //         let syl_untrim = line.as_slice().slice(start, end);
+    //         let mut syl = syl_untrim.trim_right().to_string();
+    //         if syl.len() != syl_untrim.len() || syl_untrim.is_empty() {
+    //             syl.push(' ');
+    //         }
+
+    //         let i = intern_syl.len();
+    //         let interned_syl = *intern_syl.find_with_or_insert_with(Rc::new(syl),
+    //                                                                 i,
+    //                                                                 |_k, _v, _a| (),
+    //                                                                 |k, a| {
+    //                                                                     intern_syl_vec.push(k.clone());
+    //                                                                     a
+    //                                                                 });
+
+    //         // syllable_multiset.find_with_or_insert_with(interned_syl, (), |_k, v_ref, _u| *v_ref += 1, |_k, _u| 1);
+    //         // syllable_multiset.push(interned_syl);
+
+    //         append(&mut syl_trie, buf_syls.as_slice(), interned_syl);
+
+    //         buf_syls.pop();
+    //         buf_syls.unshift(interned_syl);
+    //     }
+    // }
 
     // TODO: deserialize
 
